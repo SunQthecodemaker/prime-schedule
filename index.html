@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>스케줄 관리 시스템</title>
+
+  <!-- 구글 폰트 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- jSpreadsheet CE -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsuites/dist/jsuites.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jspreadsheet-ce/dist/jspreadsheet.min.css" />
+
+  <!-- 앱 스타일 -->
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- 외부 라이브러리 (순서 중요) -->
+  <script src="https://cdn.jsdelivr.net/npm/jsuites/dist/jsuites.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspreadsheet-ce/dist/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/plugin/weekOfYear.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/plugin/isSameOrAfter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/plugin/isSameOrBefore.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+
+<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VIEW: 로그인
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div id="v-login" class="login-bg">
+  <div class="login-card">
+
+    <!-- 로고 -->
+    <div class="login-logo">
+      <div class="login-logo-icon">📅</div>
+      <h1 class="login-title">스케줄 관리</h1>
+      <p class="login-sub">클리닉 근무 & 연차 관리 시스템</p>
+    </div>
+
+    <!-- 탭 -->
+    <div class="login-tabs">
+      <button id="tab-emp"   class="login-tab active" data-target="box-emp">직원</button>
+      <button id="tab-admin" class="login-tab"         data-target="box-admin">관리자</button>
+    </div>
+
+    <!-- 직원 로그인 -->
+    <div id="box-emp" class="login-box">
+      <form id="form-emp">
+        <div class="field">
+          <label>이름</label>
+          <input id="inp-emp-name" type="text" placeholder="직원 이름" autocomplete="name" required />
+        </div>
+        <div class="field">
+          <label>비밀번호</label>
+          <input id="inp-emp-pass" type="password" placeholder="비밀번호" required />
+        </div>
+        <button type="submit" class="btn-primary w-full">로그인</button>
+      </form>
+    </div>
+
+    <!-- 관리자 로그인 -->
+    <div id="box-admin" class="login-box hidden">
+      <form id="form-admin">
+        <div class="field">
+          <label>이메일</label>
+          <input id="inp-admin-email" type="email" placeholder="관리자 이메일" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label>비밀번호</label>
+          <input id="inp-admin-pass" type="password" placeholder="비밀번호" required />
+        </div>
+        <button type="submit" class="btn-primary w-full">로그인</button>
+      </form>
+    </div>
+
+    <p id="login-err" class="login-err hidden"></p>
+  </div>
+</div>
+
+
+<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VIEW: 직원 포털
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div id="v-employee" class="hidden app-layout">
+
+  <!-- 상단 헤더 -->
+  <header class="app-header">
+    <div class="header-brand">📅 스케줄 관리</div>
+    <div class="header-right">
+      <span id="emp-user-name" class="header-user"></span>
+      <button id="emp-logout-btn" class="btn-ghost">로그아웃</button>
+    </div>
+  </header>
+
+  <!-- 탭 네비게이션 -->
+  <nav class="tab-nav" id="emp-tab-nav">
+    <button class="tab-btn tab-active" data-tab="schedule">📋 내 스케줄</button>
+    <button class="tab-btn"           data-tab="leave">🏖 연차 신청</button>
+    <button class="tab-btn"           data-tab="docs">📄 서류 제출</button>
+  </nav>
+
+  <!-- 콘텐츠 영역 -->
+  <main id="emp-content" class="app-content"></main>
+</div>
+
+
+<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VIEW: 관리자 포털
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<div id="v-admin" class="hidden app-layout">
+
+  <!-- 상단 헤더 -->
+  <header class="app-header">
+    <div class="header-brand">📅 스케줄 관리</div>
+    <div class="header-right">
+      <span class="header-badge">관리자</span>
+      <span id="admin-user-name" class="header-user"></span>
+      <button id="admin-logout-btn" class="btn-ghost">로그아웃</button>
+    </div>
+  </header>
+
+  <!-- 탭 네비게이션 -->
+  <nav class="tab-nav" id="admin-tab-nav">
+    <button class="tab-btn tab-active" data-tab="schedule">🗓 스케줄 관리</button>
+    <button class="tab-btn"           data-tab="leaves">✅ 연차 승인</button>
+    <button class="tab-btn"           data-tab="employees">👥 직원 관리</button>
+    <button class="tab-btn"           data-tab="documents">📄 서류 검토</button>
+  </nav>
+
+  <!-- 콘텐츠 영역 -->
+  <main id="admin-content" class="app-content"></main>
+</div>
+
+
+<!-- 토스트 알림 -->
+<div id="toast" class="toast hidden"></div>
+
+<!-- 앱 진입점 -->
+<script type="module" src="main.js"></script>
+</body>
+</html>
