@@ -1,7 +1,7 @@
 // main.js — 앱 진입점: 초기화, 로그인, 탭 전환
 
 import { state }                          from './core/state.js';
-import { signInEmployee, signInAdmin, signOut, restoreSession } from './core/auth.js';
+import { signInEmployee, signInAdmin, signOut, restoreSession, sendPasswordReset } from './core/auth.js';
 import { goTo, switchTab }                from './core/router.js';
 
 // ── 직원 포털 탭 ───────────────────────────────────────────
@@ -105,13 +105,32 @@ async function handleEmpLogin(e) {
   const form = e.target;
   setLoading(form, true);
 
-  const name = document.getElementById('inp-emp-name').value.trim();
+  const nameOrEmail = document.getElementById('inp-emp-name').value.trim();
   const pass = document.getElementById('inp-emp-pass').value;
-  const result = await signInEmployee(name, pass);
+  const result = await signInEmployee(nameOrEmail, pass);
 
   setLoading(form, false);
   if (result.error) { showLoginError(result.error); return; }
+  if (result.role === 'admin') { enterAdminPortal(); return; }
   enterEmployeePortal();
+}
+
+async function handlePasswordReset(e) {
+  e.preventDefault();
+  const email = document.getElementById('inp-emp-name').value.trim();
+  if (!email.includes('@')) {
+    showLoginError('비밀번호 재설정은 이메일 주소를 입력해주세요.');
+    return;
+  }
+  const btn = document.getElementById('btn-reset-pass');
+  btn.disabled = true;
+  btn.textContent = '발송 중…';
+  const { error } = await sendPasswordReset(email);
+  btn.disabled = false;
+  btn.textContent = '비밀번호 재설정';
+  if (error) { showLoginError(error); return; }
+  document.getElementById('login-err').classList.add('hidden');
+  toast('재설정 링크를 이메일로 발송했습니다.', 'info');
 }
 
 async function handleAdminLogin(e) {
@@ -171,9 +190,16 @@ async function init() {
     if (btn) renderAdminTab(btn.dataset.tab);
   });
 
-  // 관리자 세션 복원
+  // 세션 복원 (직원/관리자 모두)
   const restored = await restoreSession();
-  if (restored) { enterAdminPortal(); return; }
+  if (restored) {
+    if (state.role === 'admin') enterAdminPortal();
+    else enterEmployeePortal();
+    return;
+  }
+
+  // 비밀번호 재설정 버튼
+  document.getElementById('btn-reset-pass').addEventListener('click', handlePasswordReset);
 
   // 기본: 로그인 화면
   goTo('v-login');

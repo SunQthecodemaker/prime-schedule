@@ -384,6 +384,21 @@ html, body {
 
 .w-full { width: 100%; }
 
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  padding: 8px 0 0;
+  display: block;
+  width: 100%;
+  text-align: center;
+  opacity: .8;
+}
+.btn-link:hover { opacity: 1; text-decoration: underline; }
+
 /* 배지 */
 .badge {
   display: inline-block;
