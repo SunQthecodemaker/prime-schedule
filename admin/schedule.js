@@ -164,20 +164,26 @@ function createSheet(el, rowList, dateList, data) {
   const styles = buildStyles(rowList, dateList, data, vm);
   const label  = dayjs(state.schedule.date).format('YYYY년 M월');
 
-  jsi = jspreadsheet(el, {
-    data,
-    columns: [
-      {title:'직원명',width:90,type:'text',readOnly:true,align:'center'},
-      ...dateList.map(col=>({title:`${col.dayNum}\n${col.dayLabel}`,width:34,type:'text',align:'center'})),
-      {title:'근무',width:42,type:'text',readOnly:true,align:'center'},
-      {title:'휴무',width:42,type:'text',readOnly:true,align:'center'},
-    ],
-    nestedHeaders:[[{title:'직원',colspan:1},{title:label,colspan:dateList.length},{title:'합계',colspan:2}]],
-    freezeColumns:1, style:styles, tableWidth:'100%',
-    allowDeleteColumn:false,allowInsertColumn:false,allowDeleteRow:false,allowInsertRow:false,
-    columnDrag:false, rowDrag:true, columnSorting:false, search:false, pagination:false,
-    onchange: onCellChange, onmoverow: onMoveRow, contextMenu: ctxMenu,
+  // jSpreadsheet CE v5: worksheets 배열로 감싸고, 콜백은 최상위에
+  const sheets = jspreadsheet(el, {
+    worksheets: [{
+      data,
+      columns: [
+        {title:'직원명',width:90,type:'text',readOnly:true,align:'center'},
+        ...dateList.map(col=>({title:`${col.dayNum}\n${col.dayLabel}`,width:34,type:'text',align:'center'})),
+        {title:'근무',width:42,type:'text',readOnly:true,align:'center'},
+        {title:'휴무',width:42,type:'text',readOnly:true,align:'center'},
+      ],
+      nestedHeaders:[[{title:'직원',colspan:1},{title:label,colspan:dateList.length},{title:'합계',colspan:2}]],
+      freezeColumns:1, style:styles, tableWidth:'100%',
+      allowDeleteColumn:false,allowInsertColumn:false,allowDeleteRow:false,allowInsertRow:false,
+      columnDrag:false, rowDrag:true, columnSorting:false, search:false, pagination:false,
+    }],
+    onchange: onCellChange,
+    onmoverow: onMoveRow,
+    contextMenu: ctxMenu,
   });
+  jsi = sheets[0];
 
   // 연차 셀 readOnly
   rowList.forEach(({employee:e},ri)=>{
@@ -227,12 +233,12 @@ function onCellChange(inst, cell, x, y, value) {
   updateSaveBtn(); refreshSummary(y);
 }
 
-function onMoveRow(from,to) {
+function onMoveRow(ws,from,to) {  // v5: 첫 파라미터 worksheet 추가
   const [m]=rows.splice(from,1); rows.splice(to,0,m);
   saveLayout().catch(e=>console.warn('레이아웃 저장 실패:',e));
 }
 
-function ctxMenu(obj,x,y,e,items) {
+function ctxMenu(ws,x,y,e,items) {  // v5: 첫 파라미터 worksheet 추가
   if(x===0||x>dates.length) return items;
   return [
     {title:'✅ 근무',onclick:()=>fill('근')},{title:'🏖 연차',onclick:()=>fill('연')},
@@ -243,10 +249,13 @@ function ctxMenu(obj,x,y,e,items) {
 }
 
 function fill(status) {
-  const sel=jsi?.selectedCell; if(!sel) return;
-  const [x1,y1,x2,y2]=sel;
-  for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++)
-    for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++){
+  // v5: selectedCell → getSelected() 반환값은 [{x,y}, ...] 배열
+  const sel=jsi?.getSelected?.(); if(!sel||!sel.length) return;
+  const xs=sel.map(s=>s.x), ys=sel.map(s=>s.y);
+  const x1=Math.min(...xs), x2=Math.max(...xs);
+  const y1=Math.min(...ys), y2=Math.max(...ys);
+  for(let y=y1;y<=y2;y++)
+    for(let x=x1;x<=x2;x++){
       if(x===0||x>dates.length) continue;
       if(leaves.get(rows[y]?.employee?.id)?.has(dates[x-1]?.date)) continue;
       jsi.setValue(C(x,y),status,true);
