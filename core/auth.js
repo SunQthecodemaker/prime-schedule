@@ -53,9 +53,9 @@ export async function signInEmployee(nameOrEmail, password) {
       .eq('email', nameOrEmail).eq('password', password).single();
     if (emp) {
       state.user = emp;
-      state.role = 'employee';
+      state.role = emp.role === 'admin' ? 'admin' : 'employee';
       await loadMasterData();
-      return { user: emp, role: 'employee' };
+      return { user: emp, role: state.role };
     }
     return { error: '이메일 또는 비밀번호가 틀렸습니다.' };
   } else {
