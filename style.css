@@ -724,6 +724,201 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   관리자 스케줄 달력
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.sched-wrap {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px - 44px);
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.cal-mount {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px 12px;
+  background: var(--bg);
+}
+
+/* 달력 그리드 */
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  min-width: 700px;
+}
+
+/* 요일 헤더 */
+.cal-hdr {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+  padding: 6px 0;
+  background: var(--surface);
+  border-radius: 6px 6px 0 0;
+  border-bottom: 2px solid var(--border);
+}
+.cal-hdr-sun { color: var(--red); }
+.cal-hdr-sat { color: var(--blue); }
+
+/* 날짜 셀 */
+.cal-day {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 5px 6px;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: box-shadow .1s;
+}
+.cal-day:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.cal-day-empty {
+  background: transparent;
+  border-color: transparent;
+  min-height: 90px;
+}
+.cal-day-today {
+  background: #fffbeb;
+  border-color: #fbbf24;
+  border-width: 2px;
+}
+.cal-day-sun  { background: #fff8f8; }
+.cal-day-sat  { background: #f8f9ff; }
+
+/* 날짜 숫자 */
+.cal-date-num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.cal-num-red   { color: var(--red); }
+.cal-num-blue  { color: var(--blue); }
+.cal-num-today {
+  background: var(--blue);
+  color: #fff;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+.cal-holiday-dot {
+  width: 5px; height: 5px;
+  background: var(--red);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 칩 컨테이너 */
+.cal-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+/* 직원 칩 */
+.cal-chip {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: filter .1s, transform .05s;
+  user-select: none;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.cal-chip:hover { filter: brightness(.93); transform: scale(1.02); }
+.cal-chip:active { transform: scale(.98); }
+
+/* 상태별 배경 */
+.cal-chip-work   { background: #f8fafc; color: #374151; border-color: #e2e8f0; }
+.cal-chip-annual { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; font-style: italic; }
+.cal-chip-half   { background: #e0f2fe; color: #075985; border-color: #bae6fd; }
+.cal-chip-off    { background: #fef9c3; color: #78350f; border-color: #fde68a; }
+.cal-chip-leave  { background: #fce7f3; color: #9d174d; border-color: #fbcfe8; }
+
+/* 원장 강조 */
+.cal-chip-lead { font-weight: 700; }
+
+/* 시스템 연차 (이탤릭 + 약한 테두리) */
+.cal-chip-sys { font-style: italic; }
+
+/* 칩 내부 요소 */
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.chip-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chip-abbr {
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+  opacity: .8;
+}
+
+/* 상태 선택 팝업 */
+.cal-popup {
+  position: fixed;
+  z-index: 9000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 130px;
+  animation: popIn .1s ease;
+}
+@keyframes popIn {
+  from { opacity: 0; transform: scale(.95) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1)  translateY(0); }
+}
+.cal-pop-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-family: var(--font);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-1);
+  transition: background .1s;
+  white-space: nowrap;
+}
+.cal-pop-btn:hover { background: var(--bg); }
+.cal-pop-disabled  { opacity: .4; cursor: not-allowed; }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    유틸리티
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .hidden  { display: none !important; }
