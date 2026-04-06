@@ -603,6 +603,22 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 }
 .sheet-mount .jexcel > tbody > tr:hover > td { filter: brightness(.97); }
 
+/* 셀 선택 하이라이트 — inline style을 filter로 뚫음 */
+.sheet-mount table td.highlight {
+  filter: brightness(.78) saturate(1.4) !important;
+  outline: 2px solid #2563eb !important;
+  outline-offset: -2px !important;
+  position: relative;
+  z-index: 1;
+}
+.sheet-mount table td.highlight-selected {
+  filter: brightness(.70) saturate(1.6) !important;
+  outline: 2px solid #1d4ed8 !important;
+  outline-offset: -2px !important;
+  position: relative;
+  z-index: 2;
+}
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    직원 스케줄 캘린더 (my-schedule)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */

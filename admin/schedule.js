@@ -378,7 +378,7 @@ function createSheet(el) {
   jsi = sheets[0];
 
   styleHeaders(label);
-  _bindKeyboard(el);
+  _bindKeyboard();
 }
 
 function styleHeaders(label) {
@@ -424,18 +424,12 @@ function styleHeaders(label) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 클립보드 & 키보드 바인딩
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function _bindKeyboard(el) {
-  if (_kbEl) {
-    _kbEl.removeEventListener('copy',    _onCopy,    true);
-    _kbEl.removeEventListener('cut',     _onCut,     true);
-    _kbEl.removeEventListener('paste',   _onPaste,   true);
-    _kbEl.removeEventListener('keydown', _onKeydown, true);
-  }
-  _kbEl = el;
-  el.addEventListener('copy',    _onCopy,    true);
-  el.addEventListener('cut',     _onCut,     true);
-  el.addEventListener('paste',   _onPaste,   true);
-  el.addEventListener('keydown', _onKeydown, true);
+
+// document 레벨 캡처로 바인딩 → jSpreadsheet 내부 핸들러보다 먼저 실행
+function _bindKeyboard() {
+  if (_kbEl) document.removeEventListener('keydown', _kbEl, true);
+  _kbEl = _onKeydown;
+  document.addEventListener('keydown', _kbEl, true);
 }
 
 function _selRange() {
@@ -445,7 +439,6 @@ function _selRange() {
   return { x1: Math.min(...xs), x2: Math.max(...xs), y1: Math.min(...ys), y2: Math.max(...ys) };
 }
 
-// 선택 영역의 상태값 2D 배열 추출
 function _selStatusGrid() {
   const range = _selRange();
   if (!range) return null;
@@ -468,23 +461,37 @@ function _selStatusGrid() {
   return rows;
 }
 
-function _onCopy(e) {
+function _onKeydown(e) {
   if (!jsi) return;
-  e.preventDefault(); e.stopPropagation();
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (!ctrl) return;
+
+  const sel = jsi.getSelected?.();
+  if (!sel?.length) return; // 선택된 셀 없으면 브라우저 기본 동작
+
+  const key = e.key.toLowerCase();
+  if (key === 'c') { e.preventDefault(); e.stopPropagation(); _doCopy(); }
+  else if (key === 'x') { e.preventDefault(); e.stopPropagation(); _doCut(); }
+  else if (key === 'v') { e.preventDefault(); e.stopPropagation(); _doPasteFromClipboard(); }
+  else if (key === 'z') { e.preventDefault(); e.stopPropagation(); undoAction(); }
+  else if (key === 'y') { e.preventDefault(); e.stopPropagation(); redoAction(); }
+}
+
+function _doCopy() {
   const rows = _selStatusGrid();
   if (!rows) return;
   _clipBuffer = rows;
-  e.clipboardData.setData('text/plain', rows.map(r => r.join('\t')).join('\n'));
+  const text = rows.map(r => r.join('\t')).join('\n');
+  navigator.clipboard.writeText(text).catch(() => {});
   toast('📋 복사됨', 'info');
 }
 
-function _onCut(e) {
-  if (!jsi) return;
-  e.preventDefault(); e.stopPropagation();
+function _doCut() {
   const rows = _selStatusGrid();
   if (!rows) return;
   _clipBuffer = rows;
-  e.clipboardData.setData('text/plain', rows.map(r => r.join('\t')).join('\n'));
+  const text = rows.map(r => r.join('\t')).join('\n');
+  navigator.clipboard.writeText(text).catch(() => {});
 
   // 선택 영역 초기화
   _pushHistory();
@@ -506,22 +513,21 @@ function _onCut(e) {
   toast('✂ 잘라내기 완료', 'info');
 }
 
-function _onPaste(e) {
-  if (!jsi) return;
-  e.preventDefault(); e.stopPropagation();
-  const text = e.clipboardData?.getData('text/plain') || '';
-  const grid = text.trim()
-    ? text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split('\t'))
-    : _clipBuffer;
-  if (grid) _doPaste(grid);
-}
-
-function _onKeydown(e) {
-  if (!jsi) return;
-  const ctrl = e.ctrlKey || e.metaKey;
-  if (!ctrl) return;
-  if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); e.stopPropagation(); undoAction(); }
-  if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); e.stopPropagation(); redoAction(); }
+function _doPasteFromClipboard() {
+  navigator.clipboard.readText()
+    .then(text => {
+      if (text.trim()) {
+        const grid = text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split('\t'));
+        _doPaste(grid);
+      } else if (_clipBuffer) {
+        _doPaste(_clipBuffer);
+      }
+    })
+    .catch(() => {
+      // 권한 없으면 내부 버퍼 사용
+      if (_clipBuffer) _doPaste(_clipBuffer);
+      else toast('클립보드 접근 권한이 없습니다. 내부 복사본만 사용 가능합니다.', 'error');
+    });
 }
 
 function _doPaste(grid) {
@@ -531,12 +537,13 @@ function _doPaste(grid) {
 
   _pushHistory();
   const styleUpdates = {};
+  let changed = 0;
 
   for (let ri = 0; ri < grid.length; ri++) {
     for (let ci = 0; ci < grid[ri].length; ci++) {
       const x = x1 + ci, y = y1 + ri;
       const status = normPaste((grid[ri][ci] || '').trim());
-      if (status === null) continue;  // 인식 불가 스킵
+      if (status === null) continue;
 
       const info = decodeCell(x, y);
       if (!info || info.day.month() !== curMonth) continue;
@@ -546,26 +553,23 @@ function _doPaste(grid) {
       styleUpdates[C(x, y)] = cellStyle(emp, x, info.dayIdx, info.date, status);
       statusMap.set(`${emp.employee.id}_${info.date}`, status);
       unsaved.set(`${emp.employee.id}_${info.date}`, { empId: emp.employee.id, date: info.date, status: status || '근' });
+      changed++;
     }
   }
 
-  if (Object.keys(styleUpdates).length) {
+  if (changed > 0) {
     jsi.setStyle(styleUpdates);
     updateSaveBtn();
-    toast('📋 붙여넣기 완료', 'success');
+    toast(`📋 ${changed}셀 붙여넣기 완료`, 'success');
   } else {
     _histStack.pop();
     if (_histIdx > 0) _histIdx--;
+    toast('붙여넣을 유효한 상태값이 없습니다', 'info');
   }
 }
 
-// 컨텍스트 메뉴용 복사 (clipboardData 없이 navigator.clipboard 사용)
 function _copyToClipboard() {
-  const rows = _selStatusGrid();
-  if (!rows) return;
-  _clipBuffer = rows;
-  navigator.clipboard.writeText(rows.map(r => r.join('\t')).join('\n')).catch(() => {});
-  toast('📋 복사됨', 'info');
+  _doCopy();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
