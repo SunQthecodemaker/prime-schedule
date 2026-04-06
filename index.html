@@ -118,7 +118,7 @@
   <header class="app-header">
     <div class="header-brand">📅 스케줄 관리</div>
     <div class="header-right">
-      <span class="header-badge">관리자</span>
+      <span id="admin-role-badge" class="header-badge">관리자</span>
       <span id="admin-user-name" class="header-user"></span>
       <button id="admin-logout-btn" class="btn-ghost">로그아웃</button>
     </div>
@@ -128,7 +128,7 @@
   <nav class="tab-nav" id="admin-tab-nav">
     <button class="tab-btn tab-active" data-tab="schedule">🗓 스케줄 관리</button>
     <button class="tab-btn"           data-tab="leaves">✅ 연차 승인</button>
-    <button class="tab-btn"           data-tab="employees">👥 직원 관리</button>
+    <button class="tab-btn"           data-tab="employees" id="tab-employees">👥 직원 관리</button>
     <button class="tab-btn"           data-tab="documents">📄 서류 검토</button>
   </nav>
 

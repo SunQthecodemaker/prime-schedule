@@ -31,6 +31,12 @@ export async function loadMasterData() {
 export async function signInEmployee(nameOrEmail, password) {
   const isEmail = nameOrEmail.includes('@');
 
+  function parseRole(emp) {
+    if (emp.role === 'admin')   return 'admin';
+    if (emp.role === 'manager') return 'manager';
+    return 'employee';
+  }
+
   if (isEmail) {
     // 1) Supabase Auth 시도 (이메일이 Auth에 등록된 경우)
     const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -42,7 +48,7 @@ export async function signInEmployee(nameOrEmail, password) {
         .eq('email', nameOrEmail).single();
       if (emp) {
         state.user = emp;
-        state.role = emp.role === 'admin' ? 'admin' : 'employee';
+        state.role = parseRole(emp);
         await loadMasterData();
         return { user: emp, role: state.role };
       }
@@ -53,7 +59,7 @@ export async function signInEmployee(nameOrEmail, password) {
       .eq('email', nameOrEmail).eq('password', password).single();
     if (emp) {
       state.user = emp;
-      state.role = emp.role === 'admin' ? 'admin' : 'employee';
+      state.role = parseRole(emp);
       await loadMasterData();
       return { user: emp, role: state.role };
     }
@@ -63,9 +69,9 @@ export async function signInEmployee(nameOrEmail, password) {
     const { data: emp, error } = await loginEmployee(nameOrEmail, password);
     if (error || !emp) return { error: '이름 또는 비밀번호가 틀렸습니다.' };
     state.user = emp;
-    state.role = 'employee';
+    state.role = parseRole(emp);
     await loadMasterData();
-    return { user: emp, role: 'employee' };
+    return { user: emp, role: state.role };
   }
 }
 
@@ -76,7 +82,7 @@ export async function signInEmployee(nameOrEmail, password) {
 export async function signInAdmin(email, password) {
   const result = await signInEmployee(email, password);
   if (result.error) return result;
-  if (result.role !== 'admin') {
+  if (result.role !== 'admin' && result.role !== 'manager') {
     await signOut();
     return { error: '관리자 계정이 아닙니다.' };
   }
@@ -123,7 +129,7 @@ export async function restoreSession() {
   if (!emp) { await supabase.auth.signOut(); return false; }
 
   state.user = emp;
-  state.role = emp.role === 'admin' ? 'admin' : 'employee';
+  state.role = emp.role === 'admin' ? 'admin' : emp.role === 'manager' ? 'manager' : 'employee';
   await loadMasterData();
   return true;
 }

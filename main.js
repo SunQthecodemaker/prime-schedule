@@ -58,6 +58,16 @@ function enterEmployeePortal() {
 
 function enterAdminPortal() {
   document.getElementById('admin-user-name').textContent = state.user.name;
+  // 역할 배지 및 탭 표시 제어
+  const badge = document.getElementById('admin-role-badge');
+  const empTab = document.getElementById('tab-employees');
+  if (state.role === 'manager') {
+    if (badge) badge.textContent = '중간관리자';
+    if (empTab) empTab.style.display = 'none';
+  } else {
+    if (badge) badge.textContent = '관리자';
+    if (empTab) empTab.style.display = '';
+  }
   goTo('v-admin');
   renderAdminTab('schedule');
 }
@@ -90,7 +100,13 @@ async function renderAdminTab(tab) {
   try {
     if (tab === 'schedule')  await renderAdminSchedule(content);
     if (tab === 'leaves')    await renderAdminLeaves(content);
-    if (tab === 'employees') await renderAdminEmployees(content);
+    if (tab === 'employees') {
+      if (state.role === 'manager') {
+        content.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔒</div><div class="empty-state-text">접근 권한이 없습니다</div></div>';
+      } else {
+        await renderAdminEmployees(content);
+      }
+    }
     if (tab === 'documents') await renderAdminDocuments(content);
   } finally { _tabRendering = false; }
 }
@@ -111,7 +127,7 @@ async function handleEmpLogin(e) {
 
   setLoading(form, false);
   if (result.error) { showLoginError(result.error); return; }
-  if (result.role === 'admin') { enterAdminPortal(); return; }
+  if (result.role === 'admin' || result.role === 'manager') { enterAdminPortal(); return; }
   enterEmployeePortal();
 }
 
@@ -193,7 +209,7 @@ async function init() {
   // 세션 복원 (직원/관리자 모두)
   const restored = await restoreSession();
   if (restored) {
-    if (state.role === 'admin') enterAdminPortal();
+    if (state.role === 'admin' || state.role === 'manager') enterAdminPortal();
     else enterEmployeePortal();
     return;
   }

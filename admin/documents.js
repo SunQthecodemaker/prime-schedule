@@ -1,10 +1,13 @@
-// admin/documents.js — 서류 검토 및 요청 관리
+// admin/documents.js — 서류 검토 및 요청 관리 (2단계: 중간관리자 1차 → 최고관리자 최종)
 
 import { state }                           from '../core/state.js';
 import { fetchDocRequests, fetchSubmittedDocs,
          updateSubmittedDoc, createDocRequest,
          fetchDocTemplates }               from '../core/db.js';
 import { toast }                           from '../main.js';
+
+const isAdmin   = () => state.role === 'admin';
+const isManager = () => state.role === 'manager';
 
 let activeTab = 'submitted'; // 'submitted' | 'request'
 
@@ -52,21 +55,58 @@ async function renderSubmitted(el) {
     return;
   }
 
-  const STATUS_LABEL = { pending:'검토 대기', approved:'승인', rejected:'반려' };
-  const BADGE_CLASS  = { pending:'badge-pending', approved:'badge-approved', rejected:'badge-rejected' };
+  const STATUS_LABEL = {
+    pending:      '검토 대기',
+    pre_approved: '1차 승인 (최고관리자 대기)',
+    approved:     '최종 승인',
+    rejected:     '반려',
+  };
+  const BADGE_CLASS = {
+    pending:      'badge-pending',
+    pre_approved: 'badge-pre',
+    approved:     'badge-approved',
+    rejected:     'badge-rejected',
+  };
 
   el.innerHTML = list.map(doc => {
     const emp = (state.employees || []).find(e => e.id === doc.employee_id);
+
+    let actionBtns = '';
+    if (isManager()) {
+      if (doc.status === 'pending') {
+        actionBtns = `
+          <div style="display:flex;flex-direction:column;gap:8px;min-width:120px;">
+            <button class="btn-primary doc-pre-approve-btn" data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">🔶 1차 승인</button>
+            <button class="btn-danger  doc-reject-btn"      data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">❌ 반려</button>
+          </div>`;
+      }
+    } else {
+      if (doc.status === 'pending') {
+        actionBtns = `
+          <div style="display:flex;flex-direction:column;gap:8px;min-width:120px;">
+            <button class="btn-secondary doc-pre-approve-btn" data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">🔶 1차 승인</button>
+            <button class="btn-primary   doc-approve-btn"     data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">✅ 최종 승인</button>
+            <button class="btn-danger    doc-reject-btn"      data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">❌ 반려</button>
+          </div>`;
+      } else if (doc.status === 'pre_approved') {
+        actionBtns = `
+          <div style="display:flex;flex-direction:column;gap:8px;min-width:120px;">
+            <button class="btn-primary doc-approve-btn" data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">✅ 최종 승인</button>
+            <button class="btn-danger  doc-reject-btn"  data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">❌ 반려</button>
+          </div>`;
+      }
+    }
+
     return `
       <div class="card mb-3" data-docid="${doc.id}">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div style="flex:1;min-width:200px;">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
               <strong>${emp?.name || '(알 수 없음)'}</strong>
-              <span class="badge ${BADGE_CLASS[doc.status]||''}">${STATUS_LABEL[doc.status]||doc.status}</span>
+              <span class="badge ${BADGE_CLASS[doc.status] || ''}">${STATUS_LABEL[doc.status] || doc.status}</span>
               <span class="text-xs text-muted">${dayjs(doc.created_at).format('YYYY.MM.DD HH:mm')}</span>
             </div>
-            <div class="text-sm mb-2"><span class="text-muted">서류명:</span> <strong>${doc.document_name||'-'}</strong></div>
+            <div class="text-sm mb-2"><span class="text-muted">서류명:</span> <strong>${doc.document_name || '-'}</strong></div>
             ${doc.file_url ? `
               <div class="text-sm mb-2">
                 <span class="text-muted">첨부파일:</span>
@@ -75,28 +115,34 @@ async function renderSubmitted(el) {
             ${doc.note ? `<div class="text-sm" style="color:var(--text-2);">메모: ${doc.note}</div>` : ''}
             ${doc.reviewer_note ? `<div class="text-xs text-muted mt-1">검토 의견: ${doc.reviewer_note}</div>` : ''}
           </div>
-
-          ${doc.status === 'pending' ? `
-          <div style="display:flex;flex-direction:column;gap:8px;min-width:120px;">
-            <button class="btn-primary doc-approve-btn" data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">✅ 승인</button>
-            <button class="btn-danger  doc-reject-btn"  data-id="${doc.id}" style="padding:6px 14px;font-size:12px;">❌ 반려</button>
-          </div>` : ''}
+          ${actionBtns}
         </div>
       </div>`;
   }).join('');
 
-  el.querySelectorAll('.doc-approve-btn').forEach(btn => {
-    btn.addEventListener('click', () => handleDocApprove(btn.dataset.id));
+  el.querySelectorAll('.doc-pre-approve-btn').forEach(btn =>
+    btn.addEventListener('click', () => handleDocPreApprove(btn.dataset.id)));
+  el.querySelectorAll('.doc-approve-btn').forEach(btn =>
+    btn.addEventListener('click', () => handleDocApprove(btn.dataset.id)));
+  el.querySelectorAll('.doc-reject-btn').forEach(btn =>
+    btn.addEventListener('click', () => handleDocReject(btn.dataset.id)));
+}
+
+async function handleDocPreApprove(id) {
+  const { error } = await updateSubmittedDoc(id, {
+    status: 'pre_approved',
+    reviewer_note: `1차 승인: ${state.user.name}`,
   });
-  el.querySelectorAll('.doc-reject-btn').forEach(btn => {
-    btn.addEventListener('click', () => handleDocReject(btn.dataset.id));
-  });
+  if (error) { toast('1차 승인 실패: ' + error.message, 'error'); return; }
+  toast('🔶 1차 승인 완료 — 최고관리자 최종 승인 대기 중', 'info');
+  const el = document.getElementById('doc-panel');
+  if (el) await renderSubmitted(el);
 }
 
 async function handleDocApprove(id) {
   const { error } = await updateSubmittedDoc(id, { status: 'approved' });
   if (error) { toast('승인 실패: ' + error.message, 'error'); return; }
-  toast('✅ 서류가 승인되었습니다.', 'success');
+  toast('✅ 서류가 최종 승인되었습니다.', 'success');
   const el = document.getElementById('doc-panel');
   if (el) await renderSubmitted(el);
 }

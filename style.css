@@ -568,6 +568,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 .badge-반 { background:#e0f2fe; color:#075985; padding:2px 7px; border-radius:4px; }
 .badge-휴 { background:#fef9c3; color:#78350f; padding:2px 7px; border-radius:4px; }
 .badge-직 { background:#fce7f3; color:#9d174d; padding:2px 7px; border-radius:4px; }
+.badge-pre { background:#fff7ed; color:#c2410c; padding:2px 7px; border-radius:4px; font-size:11px; font-weight:600; }
 
 /* jSpreadsheet 오버라이드 */
 .sheet-mount .jexcel > thead > tr > td {
