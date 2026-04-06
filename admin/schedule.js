@@ -440,17 +440,13 @@ export function render(container) {
   container.innerHTML = `
     <div class="sched-wrap">
       <div class="sched-toolbar">
-        <div class="toolbar-left">
-          ${buildDeptFilter()}
-          <div class="view-toggle" style="margin-left:8px;">
-            <button class="view-btn active" data-mode="all">전체</button>
-            <button class="view-btn" data-mode="working">근무</button>
-            <button class="view-btn" data-mode="off">휴무</button>
-          </div>
+        ${buildDeptFilter()}
+        <div class="view-toggle">
+          <button class="view-btn active" data-mode="all">전체</button>
+          <button class="view-btn" data-mode="working">근무</button>
+          <button class="view-btn" data-mode="off">휴무</button>
         </div>
-        <div class="action-btns">
-          <button id="sched-save-btn" disabled class="btn-primary">💾 저장</button>
-        </div>
+        <button id="sched-save-btn" disabled class="btn-primary" style="margin-left:auto;">💾 저장</button>
       </div>
 
       <div class="sheet-nav">
