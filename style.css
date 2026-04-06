@@ -781,7 +781,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 
 /* ─── 달력 외곽 구조 ─── */
 .cal-outer {
-  min-width: 1100px;
+  min-width: 1400px;
   font-size: 12px;
 }
 .cal-hdr-row {
