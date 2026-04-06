@@ -724,7 +724,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   관리자 스케줄 달력
+   관리자 스케줄 — 달력형 (월~토 6열, 4열 직원 그리드)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .sched-wrap {
   display: flex;
@@ -736,152 +736,181 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+.sched-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 부서 필터 */
+.filter-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.filter-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.filter-btn:hover { color: var(--text-1); border-color: var(--text-3); }
+.filter-btn.active {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+
 .cal-mount {
   flex: 1;
   overflow: auto;
-  padding: 10px 12px 12px;
+  padding: 8px;
   background: var(--bg);
 }
 
-/* 달력 그리드 */
-.cal-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
-  min-width: 700px;
+/* ─── 달력 외곽 구조 ─── */
+.cal-outer {
+  min-width: 760px;
+  font-size: 12px;
 }
-
-/* 요일 헤더 */
-.cal-hdr {
+.cal-hdr-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+  margin-bottom: 3px;
+}
+.cal-hdr-cell {
   text-align: center;
   font-size: 12px;
   font-weight: 700;
-  color: var(--text-2);
+  color: #fff;
+  background: #1e3a5f;
   padding: 6px 0;
-  background: var(--surface);
-  border-radius: 6px 6px 0 0;
-  border-bottom: 2px solid var(--border);
+  border-radius: 4px 4px 0 0;
 }
-.cal-hdr-sun { color: var(--red); }
-.cal-hdr-sat { color: var(--blue); }
+.cal-hdr-sat { color: #93c5fd; }
 
-/* 날짜 셀 */
-.cal-day {
+.cal-week-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+  margin-bottom: 3px;
+}
+
+/* ─── 날짜 셀 ─── */
+.cal-day-cell {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 5px 5px 6px;
-  min-height: 90px;
+  padding: 4px;
+  min-height: 110px;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  transition: box-shadow .1s;
 }
-.cal-day:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-.cal-day-empty {
-  background: transparent;
-  border-color: transparent;
-  min-height: 90px;
-}
-.cal-day-today {
-  background: #fffbeb;
-  border-color: #fbbf24;
-  border-width: 2px;
-}
-.cal-day-sun  { background: #fff8f8; }
-.cal-day-sat  { background: #f8f9ff; }
+.cal-day-other { background: #f8fafc; border-color: #f0f0f0; }
+.cal-day-today { background: #fffbeb; border: 2px solid #fbbf24; }
+.cal-day-sat   { background: #f5f8ff; }
+.cal-day-hol   { background: #fff5f5; }
 
-/* 날짜 숫자 */
-.cal-date-num {
+/* ─── 날짜 숫자 ─── */
+.cal-day-num {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-2);
-  line-height: 1;
   display: flex;
   align-items: center;
   gap: 3px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 2px;
 }
-.cal-num-red   { color: var(--red); }
-.cal-num-blue  { color: var(--blue); }
-.cal-num-today {
-  background: var(--blue);
-  color: #fff;
-  border-radius: 50%;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-}
-.cal-holiday-dot {
+.num-sat   { color: #1d4ed8; }
+.num-other { color: #cbd5e1; font-weight: 400; }
+.hol-dot {
   width: 5px; height: 5px;
-  background: var(--red);
   border-radius: 50%;
+  background: var(--red);
   flex-shrink: 0;
 }
 
-/* 칩 컨테이너 */
-.cal-chips {
-  display: flex;
-  flex-direction: column;
+/* ─── 4열 직원 그리드 ─── */
+.cal-4grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 2px;
   flex: 1;
 }
 
-/* 직원 칩 */
-.cal-chip {
+/* ─── 직원 슬롯 (셀) ─── */
+.cal-slot {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 5px;
-  border-radius: 4px;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 3px;
   font-size: 11px;
   cursor: pointer;
-  transition: filter .1s, transform .05s;
-  user-select: none;
   border: 1px solid transparent;
   white-space: nowrap;
   overflow: hidden;
+  user-select: none;
+  transition: filter .1s;
+  min-height: 20px;
 }
-.cal-chip:hover { filter: brightness(.93); transform: scale(1.02); }
-.cal-chip:active { transform: scale(.98); }
+.cal-slot:hover   { filter: brightness(.9); }
+.cal-slot:active  { transform: scale(.97); }
+.slot-empty       { cursor: default; background: transparent !important; border: none !important; }
 
-/* 상태별 배경 */
-.cal-chip-work   { background: #f8fafc; color: #374151; border-color: #e2e8f0; }
-.cal-chip-annual { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; font-style: italic; }
-.cal-chip-half   { background: #e0f2fe; color: #075985; border-color: #bae6fd; }
-.cal-chip-off    { background: #fef9c3; color: #78350f; border-color: #fde68a; }
-.cal-chip-leave  { background: #fce7f3; color: #9d174d; border-color: #fbcfe8; }
+/* 상태별 색상 (Excel 오프표 배경색과 유사하게) */
+.slot-work   { background: #f8fafc; color: #374151; border-color: #e2e8f0; }
+.slot-annual { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; font-style: italic; }
+.slot-half   { background: #e0f2fe; color: #075985; border-color: #bae6fd; }
+.slot-off    { background: #fef9c3; color: #78350f; border-color: #fde68a; }
+.slot-leave  { background: #fce7f3; color: #9d174d; border-color: #fbcfe8; }
 
-/* 원장 강조 */
-.cal-chip-lead { font-weight: 700; }
+.slot-lead { font-weight: 700; }
+.slot-sys  { font-style: italic; }
 
-/* 시스템 연차 (이탤릭 + 약한 테두리) */
-.cal-chip-sys { font-style: italic; }
-
-/* 칩 내부 요소 */
-.chip-dot {
-  width: 6px;
-  height: 6px;
+.slot-dot {
+  width: 5px; height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.chip-name {
+.slot-name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  font-size: 11px;
 }
-.chip-abbr {
-  font-size: 10px;
+.slot-abbr {
+  font-size: 9px;
   font-weight: 700;
+  opacity: .75;
   flex-shrink: 0;
-  opacity: .8;
 }
 
-/* 상태 선택 팝업 */
-.cal-popup {
+/* ─── 상태 변경 팝업 ─── */
+.sched-popup {
   position: fixed;
   z-index: 9000;
   background: var(--surface);
@@ -895,11 +924,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   min-width: 130px;
   animation: popIn .1s ease;
 }
-@keyframes popIn {
-  from { opacity: 0; transform: scale(.95) translateY(-4px); }
-  to   { opacity: 1; transform: scale(1)  translateY(0); }
-}
-.cal-pop-btn {
+.pop-btn {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -910,13 +935,19 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   border: none;
   border-radius: calc(var(--radius) - 2px);
   cursor: pointer;
-  text-align: left;
   color: var(--text-1);
   transition: background .1s;
   white-space: nowrap;
+  text-align: left;
+  width: 100%;
 }
-.cal-pop-btn:hover { background: var(--bg); }
-.cal-pop-disabled  { opacity: .4; cursor: not-allowed; }
+.pop-btn:hover    { background: var(--bg); }
+.pop-disabled     { opacity: .4; cursor: not-allowed; }
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(.95) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1)   translateY(0); }
+}
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    유틸리티

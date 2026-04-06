@@ -1,195 +1,359 @@
-// admin/schedule.js — 달력형 오프표 (Excel 동일 구조, jSpreadsheet CE v5)
-//
-// 구조: 6열(월~토) × (주당 4행: 날짜행 1 + 내용행 3)
-// 엑셀 복사-붙여넣기 지원 / 자유 텍스트 편집
+// admin/schedule.js — 달력형 스케줄 관리
+// 월~토 6열 달력 / 날짜칸 = 4열 직원 그리드 / 부서·근무 필터
 
 import { state } from '../core/state.js';
 import {
-  fetchHolidays,
-  fetchMonthCalendar,
-  upsertMonthCalendar,
+  fetchMonthSchedules, fetchHolidays, fetchTeamLayout,
+  upsertSchedules, upsertTeamLayout,
 } from '../core/db.js';
 import { toast } from '../main.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 상수
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const COLS       = 6;                          // 월~토
-const COL_DAYS   = ['월','화','수','목','금','토'];
-const ROWS_PER_W = 4;                          // 날짜행 1 + 내용행 3
-const CONTENT_ROWS = ROWS_PER_W - 1;          // 3
+const DAY_NAMES = ['월','화','수','목','금','토'];
 
-// 열 너비
-const COL_W = [190, 190, 190, 190, 190, 160];
+const NORM = {
+  '근무':'근무','근':'근무',
+  '연차':'연차','연':'연차',
+  '반차':'반차','반':'반차',
+  '휴무':'휴무','휴가':'휴무','휴':'휴무',
+  '휴직':'휴직','직':'휴직',
+};
+const STATUS_ABBR = { '근무':'', '연차':'연', '반차':'반', '휴무':'휴', '직':'직', '휴직':'직' };
+const STATUS_CSS  = {
+  '근무': 'slot-work',
+  '연차': 'slot-annual',
+  '반차': 'slot-half',
+  '휴무': 'slot-off',
+  '휴직': 'slot-leave',
+};
+const TO_DB = { '근무':'근무','연차':'연차','반차':'반차','휴무':'휴무','휴직':'휴직' };
+const STATUS_POPUP = [
+  { s:'근무', icon:'✅' }, { s:'휴무', icon:'😴' },
+  { s:'연차', icon:'🏖' }, { s:'반차', icon:'🌙' },
+  { s:'휴직', icon:'⏸' },
+];
+
+// 부서별 색상 (dot)
+const DEPT_COLORS = [
+  '#6366f1','#ec4899','#f59e0b','#10b981',
+  '#3b82f6','#8b5cf6','#ef4444','#14b8a6',
+];
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 모듈 상태
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-let mountEl  = null;
-let jsi      = null;
-let weekList = [];      // [{ weekStart: dayjs, dateRowIdx: number }]
-let holidays = new Set();
-let changed  = false;
+let mountEl     = null;
+let rows        = [];         // [{employee, isWonJang}]
+let cellData    = new Map();  // `${empId}_${date}` → status
+let leaveSet    = new Map();  // empId → Set<dateStr>
+let holidays    = new Set();
+let unsaved     = new Map();
+let deptColorMap= new Map();  // deptId → color
+
+let filterDept  = 'all';      // 'all' | deptId
+let filterMode  = 'all';      // 'all' | 'working' | 'off'
+
+let _popup = null;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 유틸
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function L(n) { return n < 26 ? String.fromCharCode(65+n) : L(Math.floor(n/26)-1)+String.fromCharCode(65+(n%26)); }
-const C = (col, row) => `${L(col)}${row + 1}`;
+function normStatus(v) {
+  if (!v) return '근무';
+  const s = String(v).trim();
+  return NORM[s] ?? NORM[s[0]] ?? '근무';
+}
 
-// 해당 월의 월요일부터 시작하는 첫 주 월요일
+function getStatus(empId, dateStr, col) {
+  if (leaveSet.get(empId)?.has(dateStr)) return '연차';
+  const key = `${empId}_${dateStr}`;
+  if (cellData.has(key)) return cellData.get(key);
+  return (col.isWeekend || col.isHoliday) ? '휴무' : '근무';
+}
+
+function buildDeptColors() {
+  deptColorMap.clear();
+  (state.departments || []).forEach((d, i) => {
+    deptColorMap.set(d.id, DEPT_COLORS[i % DEPT_COLORS.length]);
+  });
+}
+
+// 해당 월의 첫 월요일 (월~토 캘린더용)
 function getFirstMonday(d) {
   const first = d.startOf('month');
-  const dow   = first.day(); // 0=일
-  const toMon = dow === 0 ? 6 : dow - 1;
-  return first.subtract(toMon, 'day');
-}
-
-// 날짜 표시 문자열
-function dateLabel(day, curMonth) {
-  if (day.month() !== curMonth) return day.format('MM월 DD일');
-  return String(day.date());
+  const dow   = first.day(); // 0=일, 1=월 ...
+  const diff  = dow === 0 ? 6 : dow - 1;
+  return first.subtract(diff, 'day');
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 그리드 데이터 생성
+// DB 로딩
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function buildGrid(savedData) {
-  const d         = dayjs(state.schedule.date);
-  const curMonth  = d.month();
-  const lastDay   = d.endOf('month');
-  let   weekStart = getFirstMonday(d);
+async function loadMonth() {
+  const d     = dayjs(state.schedule.date);
+  const start = d.startOf('month').format('YYYY-MM-DD');
+  const end   = d.endOf('month').format('YYYY-MM-DD');
+  const mk    = d.format('YYYY-MM-01');
 
-  weekList = [];
-  const rows   = [];
-  const styles = {};
+  const [sRes, hRes, lRes] = await Promise.all([
+    fetchMonthSchedules(start, end),
+    fetchHolidays(start, end),
+    fetchTeamLayout(mk),
+  ]);
 
-  let rowIdx = 0;
-  while (weekStart.isBefore(lastDay) || weekStart.month() === curMonth) {
-    weekList.push({ weekStart, dateRowIdx: rowIdx });
+  if (sRes.error) throw sRes.error;
+  if (hRes.error) throw hRes.error;
 
-    // ─ 날짜 행 ─
-    const dateRow = [];
-    for (let c = 0; c < COLS; c++) {
-      const day = weekStart.add(c, 'day');
-      dateRow.push(dateLabel(day, curMonth));
+  state.schedule.schedules = sRes.data || [];
+  holidays = new Set((hRes.data || []).map(h => h.date));
+  state.schedule.layout    = lRes.data?.[0]?.layout_data || null;
 
-      // 스타일
-      const isSat     = c === 5;
-      const ds        = day.format('YYYY-MM-DD');
-      const isHol     = holidays.has(ds);
-      const isOtherM  = day.month() !== curMonth;
-      const isToday   = ds === dayjs().format('YYYY-MM-DD');
+  cellData.clear();
+  (state.schedule.schedules || []).forEach(s => {
+    cellData.set(`${s.employee_id}_${s.date}`, normStatus(s.status));
+  });
 
-      let bg    = isToday   ? '#fff9c4' : '#fef3c7';
-      let color = isSat     ? '#1d4ed8'
-                : isHol     ? '#dc2626'
-                : isOtherM  ? '#9ca3af'
-                : '#374151';
-      styles[C(c, rowIdx)] = `background:${bg};color:${color};font-weight:700;text-align:center;font-size:13px;`;
-    }
-    rows.push(dateRow);
-    rowIdx++;
-
-    // ─ 내용 행 3개 ─
-    for (let r = 0; r < CONTENT_ROWS; r++) {
-      const savedRowIdx = (weekList.length - 1) * ROWS_PER_W + 1 + r;
-      const row = savedData?.[savedRowIdx]
-        ? [...savedData[savedRowIdx]]
-        : Array(COLS).fill('');
-      rows.push(row);
-
-      for (let c = 0; c < COLS; c++) {
-        const day    = weekStart.add(c, 'day');
-        const isSat  = c === 5;
-        const isOtherM = day.month() !== curMonth;
-        let bg = isOtherM ? '#f8fafc' : '#ffffff';
-        if (isSat) bg = isOtherM ? '#f0f4ff' : '#f5f8ff';
-        styles[C(c, rowIdx)] = `background:${bg};vertical-align:top;font-size:12px;`;
-      }
-      rowIdx++;
-    }
-
-    weekStart = weekStart.add(1, 'week');
-    if (weekList.length >= 6) break;
-  }
-
-  return { rows, styles };
+  leaveSet.clear();
+  (state.leaveRequests || []).forEach(r => {
+    if (r.status !== 'approved' || !Array.isArray(r.dates)) return;
+    if (!leaveSet.has(r.employee_id)) leaveSet.set(r.employee_id, new Set());
+    r.dates.forEach(ds => leaveSet.get(r.employee_id).add(ds));
+  });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// jSpreadsheet 생성
+// 직원 순서 빌드 (기존 로직 유지)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function createSheet(el, rows, styles) {
-  if (jsi) { try { jspreadsheet.destroy(el); } catch(_){} jsi = null; }
-  el.innerHTML = '';
+function buildRows() {
+  const emps    = (state.employees || []).filter(e =>
+    !e.is_temp && !e.retired && !(e.email?.startsWith('temp-'))
+  );
+  const deptMap = new Map((state.departments || []).map(d => [d.id, d]));
+  const layout  = state.schedule.layout;
 
-  const totalRows = rows.length;
-
-  // 행 높이: 날짜행=32, 내용행=62
-  const rowHeights = {};
-  for (let r = 0; r < totalRows; r++) {
-    rowHeights[r] = (r % ROWS_PER_W === 0) ? 32 : 62;
-  }
-
-  // 날짜행 readOnly 지정 (col 전체)
-  const readOnlyCells = {};
-  weekList.forEach(({ dateRowIdx }) => {
-    for (let c = 0; c < COLS; c++) {
-      readOnlyCells[C(c, dateRowIdx)] = true;
-    }
-  });
-
-  const label = dayjs(state.schedule.date).format('YYYY년 M월 오프표');
-
-  const sheets = jspreadsheet(el, {
-    worksheets: [{
-      data: rows,
-      columns: COL_DAYS.map((title, i) => ({
-        title,
-        width: COL_W[i],
-        type: 'text',
-        align: 'center',
-        wordWrap: true,
-      })),
-      nestedHeaders: [[{ title: label, colspan: COLS }]],
-      rows: rowHeights,
-      style: styles,
-      tableWidth: '100%',
-      allowDeleteColumn: false,
-      allowInsertColumn: false,
-      columnDrag: false,
-      columnSorting: false,
-      search: false,
-      pagination: false,
-    }],
-    onchange: () => { changed = true; updateSaveBtn(); },
-    contextMenu: () => [],
-  });
-
-  jsi = sheets[0];
-
-  // 날짜행 readOnly 적용
-  weekList.forEach(({ dateRowIdx }) => {
-    for (let c = 0; c < COLS; c++) {
-      try { jsi.setReadOnly(C(c, dateRowIdx), true); } catch(_) {}
-    }
-  });
-
-  // 헤더 스타일 (요일)
-  requestAnimationFrame(() => {
-    const trs = mountEl?.querySelectorAll('thead tr');
-    const tds = trs?.[trs.length - 1]?.querySelectorAll('td');
-    if (!tds) return;
-    COL_DAYS.forEach((_, i) => {
-      const td = tds[i + 1]; if (!td) return;
-      td.style.background  = '#1e3a5f';
-      td.style.color       = i === 5 ? '#93c5fd' : '#ffffff';
-      td.style.fontWeight  = '700';
-      td.style.fontSize    = '13px';
-      td.style.textAlign   = 'center';
+  if (Array.isArray(layout) && layout[0]?.leader_id !== undefined) {
+    const em = new Map(emps.map(e => [e.id, e]));
+    const out = []; const seen = new Set();
+    layout.forEach(t => {
+      const l = em.get(t.leader_id);
+      if (l) { out.push({ employee: l, isWonJang: true }); seen.add(l.id); }
+      (t.members || []).forEach(id => {
+        const m = em.get(id);
+        if (m && !seen.has(m.id)) { out.push({ employee: m, isWonJang: false }); seen.add(m.id); }
+      });
     });
+    emps.forEach(e => { if (!seen.has(e.id)) out.push({ employee: e, isWonJang: false }); });
+    return out;
+  }
+
+  const ORDER = ['원장','진료실','경영지원실','기공실'];
+  const grp   = new Map();
+  emps.forEach(e => {
+    const n = deptMap.get(e.department_id)?.name || '기타';
+    if (!grp.has(n)) grp.set(n, []);
+    grp.get(n).push(e);
   });
+  const depts = [...ORDER, ...Array.from(grp.keys()).filter(d => !ORDER.includes(d))];
+  const out   = [];
+  depts.forEach(n => (grp.get(n) || []).forEach(e =>
+    out.push({ employee: e, isWonJang: n.includes('원장') })
+  ));
+  return out;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 달력 렌더링
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function renderCalendar() {
+  if (!mountEl) return;
+  closePopup();
+
+  const d        = dayjs(state.schedule.date);
+  const curMonth = d.month();
+  const lastDay  = d.endOf('month');
+  const today    = dayjs().format('YYYY-MM-DD');
+  let   wkStart  = getFirstMonday(d);
+
+  // 부서 필터 적용된 직원 목록
+  const visibleRows = filterDept === 'all'
+    ? rows
+    : rows.filter(r => String(r.employee.department_id) === String(filterDept));
+
+  let html = `<div class="cal-outer">`;
+
+  // ── 요일 헤더
+  html += `<div class="cal-hdr-row">`;
+  DAY_NAMES.forEach((n, i) => {
+    html += `<div class="cal-hdr-cell${i === 5 ? ' cal-hdr-sat' : ''}">${n}</div>`;
+  });
+  html += `</div>`;
+
+  // ── 주 블록
+  let weekCount = 0;
+  while (wkStart.isBefore(lastDay) || wkStart.month() === curMonth) {
+    html += `<div class="cal-week-row">`;
+
+    for (let di = 0; di < 6; di++) {  // 월~토
+      const day = wkStart.add(di, 'day');
+      const ds  = day.format('YYYY-MM-DD');
+      const inMonth  = day.month() === curMonth;
+      const isSat    = di === 5;
+      const isHol    = holidays.has(ds);
+      const isToday  = ds === today;
+
+      let dayCls = 'cal-day-cell';
+      if (!inMonth) dayCls += ' cal-day-other';
+      if (isToday)  dayCls += ' cal-day-today';
+      if (isSat)    dayCls += ' cal-day-sat';
+      if (isHol)    dayCls += ' cal-day-hol';
+
+      let numCls = 'cal-day-num';
+      if (isSat || isHol) numCls += ' num-sat';
+      if (!inMonth)       numCls += ' num-other';
+
+      const col = { date: ds, isWeekend: isSat, isHoliday: isHol };
+
+      // 직원 슬롯 필터링
+      const slotsData = visibleRows
+        .map(({ employee: e, isWonJang }) => {
+          const status = getStatus(e.id, ds, col);
+          if (filterMode === 'working' && status !== '근무') return null;
+          if (filterMode === 'off'     && status === '근무') return null;
+          return { e, isWonJang, status };
+        })
+        .filter(Boolean);
+
+      html += `<div class="${dayCls}">`;
+      html += `<div class="${numCls}">${inMonth ? day.date() : day.format('M/D')}`;
+      if (isHol && inMonth) html += `<span class="hol-dot"></span>`;
+      html += `</div>`;
+
+      // 4열 그리드
+      html += `<div class="cal-4grid">`;
+      slotsData.forEach(({ e, isWonJang, status }) => {
+        const deptColor = deptColorMap.get(e.department_id) || '#94a3b8';
+        const abbr      = STATUS_ABBR[status] || '';
+        const isSys     = leaveSet.get(e.id)?.has(ds);
+
+        let slotCls = `cal-slot ${STATUS_CSS[status] || 'slot-work'}`;
+        if (isWonJang) slotCls += ' slot-lead';
+        if (isSys)     slotCls += ' slot-sys';
+
+        html += `<div class="${slotCls}"
+          data-emp="${e.id}" data-date="${ds}" data-sys="${isSys ? 1 : 0}"
+          title="${e.name} · ${status}">`;
+        html += `<span class="slot-dot" style="background:${deptColor}"></span>`;
+        html += `<span class="slot-name">${e.name}</span>`;
+        if (abbr) html += `<span class="slot-abbr">${abbr}</span>`;
+        html += `</div>`;
+      });
+
+      // 빈 슬롯 (4열 맞춤)
+      const rem = (4 - slotsData.length % 4) % 4;
+      for (let i = 0; i < rem; i++) html += `<div class="cal-slot slot-empty"></div>`;
+
+      html += `</div>`; // .cal-4grid
+      html += `</div>`; // .cal-day-cell
+    }
+
+    html += `</div>`; // .cal-week-row
+    wkStart = wkStart.add(1, 'week');
+    if (++weekCount >= 6) break;
+  }
+
+  html += `</div>`; // .cal-outer
+  mountEl.innerHTML = html;
+
+  mountEl.addEventListener('click', onSlotClick);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 상태 변경 팝업
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function onSlotClick(e) {
+  const slot = e.target.closest('.cal-slot[data-emp]');
+  if (!slot) return;
+  const empId   = parseInt(slot.dataset.emp);
+  const dateStr = slot.dataset.date;
+  const isSys   = slot.dataset.sys === '1';
+  openPopup(slot, empId, dateStr, isSys);
+}
+
+function openPopup(anchor, empId, dateStr, isSys) {
+  closePopup();
+
+  const pop = document.createElement('div');
+  pop.className = 'sched-popup';
+  pop.innerHTML = STATUS_POPUP.map(({ s, icon }) =>
+    `<button class="pop-btn${isSys && s === '연차' ? ' pop-disabled' : ''}"
+      data-status="${s}"
+      ${isSys && s === '연차' ? 'disabled title="연차시스템 자동 관리"' : ''}
+    >${icon} ${s}</button>`
+  ).join('');
+
+  pop.addEventListener('click', ev => {
+    const btn = ev.target.closest('[data-status]');
+    if (!btn || btn.disabled) return;
+    applyStatus(empId, dateStr, btn.dataset.status, isSys);
+    closePopup();
+  });
+
+  document.body.appendChild(pop);
+  _popup = pop;
+
+  const rect = anchor.getBoundingClientRect();
+  const pw = 140, ph = STATUS_POPUP.length * 38 + 8;
+  let top  = rect.bottom + window.scrollY + 4;
+  let left = rect.left   + window.scrollX;
+  if (left + pw > window.innerWidth - 8)  left = window.innerWidth - pw - 8;
+  if (top  + ph > window.innerHeight + window.scrollY - 8) top = rect.top + window.scrollY - ph - 4;
+  pop.style.top  = `${top}px`;
+  pop.style.left = `${left}px`;
+
+  setTimeout(() => document.addEventListener('click', outsideClose, { once: true }), 0);
+}
+
+function outsideClose(e) {
+  if (_popup && !_popup.contains(e.target)) closePopup();
+}
+
+function closePopup() {
+  _popup?.remove(); _popup = null;
+  document.removeEventListener('click', outsideClose);
+}
+
+function applyStatus(empId, dateStr, newStatus, isSys) {
+  if (isSys && newStatus === '연차') return;
+
+  const key = `${empId}_${dateStr}`;
+  cellData.set(key, newStatus);
+  unsaved.set(key, { empId, date: dateStr, status: newStatus });
+  updateSaveBtn();
+
+  // 해당 슬롯 직접 업데이트
+  const slot = mountEl?.querySelector(`.cal-slot[data-emp="${empId}"][data-date="${dateStr}"]`);
+  if (slot) {
+    const row       = rows.find(r => r.employee.id === empId);
+    const deptColor = deptColorMap.get(row?.employee?.department_id) || '#94a3b8';
+    const abbr      = STATUS_ABBR[newStatus] || '';
+    const isSys2    = leaveSet.get(empId)?.has(dateStr);
+
+    // 필터 적용
+    if (filterMode === 'working' && newStatus !== '근무') { slot.style.display = 'none'; return; }
+    if (filterMode === 'off'     && newStatus === '근무') { slot.style.display = 'none'; return; }
+    slot.style.display = '';
+
+    slot.className = `cal-slot ${STATUS_CSS[newStatus] || 'slot-work'}`;
+    if (row?.isWonJang) slot.className += ' slot-lead';
+    if (isSys2)         slot.className += ' slot-sys';
+    slot.setAttribute('title', `${row?.employee?.name || ''} · ${newStatus}`);
+    slot.innerHTML =
+      `<span class="slot-dot" style="background:${deptColor}"></span>` +
+      `<span class="slot-name">${row?.employee?.name || ''}</span>` +
+      (abbr ? `<span class="slot-abbr">${abbr}</span>` : '');
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -198,39 +362,37 @@ function createSheet(el, rows, styles) {
 function updateSaveBtn() {
   const btn = document.getElementById('sched-save-btn');
   if (!btn) return;
-  btn.disabled    = !changed;
-  btn.textContent = changed ? '💾 저장 *' : '💾 저장';
+  const n = unsaved.size;
+  btn.disabled    = n === 0;
+  btn.textContent = n > 0 ? `💾 저장 (${n}건)` : '💾 저장';
 }
 
 async function save() {
-  if (!jsi || !changed) return;
+  if (!unsaved.size) return;
   const btn = document.getElementById('sched-save-btn');
   if (btn) { btn.disabled = true; btn.textContent = '저장 중…'; }
-
   try {
-    const gridData   = jsi.getData();
-    const gridStyles = jsi.getStyle();
-    const month      = dayjs(state.schedule.date).format('YYYY-MM-01');
-
-    const { error } = await upsertMonthCalendar(month, gridData, gridStyles);
+    const payload = Array.from(unsaved.values()).map(({ empId, date, status }) => ({
+      employee_id: empId, date,
+      status: TO_DB[status] || '근무',
+      grid_position: 0, sort_order: 0,
+    }));
+    const { error } = await upsertSchedules(payload);
     if (error) throw error;
-
-    changed = false;
+    unsaved.clear();
     updateSaveBtn();
-    toast('✅ 저장 완료', 'success');
+    toast(`✅ ${payload.length}건 저장 완료`, 'success');
   } catch (err) {
     toast('저장 실패: ' + err.message, 'error');
-  } finally {
-    updateSaveBtn();
-  }
+  } finally { updateSaveBtn(); }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 내비게이션 / 새로고침
+// 네비게이션 / 새로고침
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function navigate(dir) {
-  if (changed && !confirm('저장 안 된 변경사항이 있습니다. 이동할까요?')) return;
-  changed = false;
+  if (unsaved.size && !confirm('저장 안 된 변경사항이 있습니다. 이동할까요?')) return;
+  unsaved.clear();
   const cur = dayjs(state.schedule.date);
   state.schedule.date = (
     dir === 'prev'  ? cur.subtract(1, 'month') :
@@ -244,35 +406,13 @@ async function refresh() {
   const title = document.getElementById('sched-month-title');
   if (title) title.textContent = dayjs(state.schedule.date).format('YYYY년 M월');
   if (!mountEl) return;
-
-  mountEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div>로딩 중…</div></div>';
-
+  mountEl.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⏳</div><div>로딩 중…</div></div>`;
   try {
-    const d     = dayjs(state.schedule.date);
-    const start = d.startOf('month').format('YYYY-MM-DD');
-    const end   = d.endOf('month').format('YYYY-MM-DD');
-    const month = d.format('YYYY-MM-01');
-
-    const [hRes, calRes] = await Promise.all([
-      fetchHolidays(start, end),
-      fetchMonthCalendar(month),
-    ]);
-
-    holidays = new Set((hRes.data || []).map(h => h.date));
-
-    // 저장된 그리드 데이터 (없으면 null)
-    const savedData   = calRes.data?.grid_data   || null;
-    const savedStyles = calRes.data?.grid_styles  || null;
-
-    const { rows, styles } = buildGrid(savedData);
-
-    // 저장된 셀 스타일 위에 덮어쓰기 (사용자가 직접 색칠한 경우)
-    const mergedStyles = savedStyles
-      ? { ...styles, ...savedStyles }
-      : styles;
-
-    createSheet(mountEl, rows, mergedStyles);
-    changed = false;
+    await loadMonth();
+    buildDeptColors();
+    rows = buildRows();
+    renderCalendar();
+    unsaved.clear();
     updateSaveBtn();
   } catch (err) {
     mountEl.innerHTML = `<p style="color:red;padding:16px;">오류: ${err.message}</p>`;
@@ -280,29 +420,56 @@ async function refresh() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 필터 UI 빌드
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function buildDeptFilter() {
+  const depts = state.departments || [];
+  return `
+    <div class="filter-group">
+      <button class="filter-btn active" data-dept="all">전체</button>
+      ${depts.map(d =>
+        `<button class="filter-btn" data-dept="${d.id}">${d.name}</button>`
+      ).join('')}
+    </div>`;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 진입점
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function render(container) {
   container.innerHTML = `
-    <div class="sheet-wrap" style="height:calc(100vh - 56px - 44px - 40px);">
-      <div class="sheet-toolbar">
-        <div style="font-size:13px;color:var(--text-2);">
-          📋 엑셀에서 복사 후 셀 클릭 → <kbd>Ctrl+V</kbd> 로 붙여넣기 가능
+    <div class="sched-wrap">
+      <div class="sched-toolbar">
+        <div class="toolbar-left">
+          ${buildDeptFilter()}
+          <div class="view-toggle" style="margin-left:8px;">
+            <button class="view-btn active" data-mode="all">전체</button>
+            <button class="view-btn" data-mode="working">근무</button>
+            <button class="view-btn" data-mode="off">휴무</button>
+          </div>
         </div>
         <div class="action-btns">
           <button id="sched-save-btn" disabled class="btn-primary">💾 저장</button>
         </div>
       </div>
+
       <div class="sheet-nav">
         <button id="sched-prev"  class="btn-secondary" style="font-size:12px;padding:5px 10px;">◀ 이전달</button>
         <h2 id="sched-month-title" class="month-title"></h2>
         <button id="sched-next"  class="btn-secondary" style="font-size:12px;padding:5px 10px;">다음달 ▶</button>
         <button id="sched-today" class="btn-secondary" style="font-size:12px;padding:5px 10px;">오늘</button>
       </div>
-      <div id="sched-mount" class="sheet-mount"></div>
+
+      <div id="sched-mount" class="cal-mount"></div>
+
       <div class="sheet-legend">
-        <span class="legend-label">💡 사용법</span>
-        <span style="color:var(--text-2);font-size:11px;">셀 클릭 후 자유롭게 입력 · 셀 범위 선택 후 Ctrl+C/V · 엑셀 내용 직접 붙여넣기 가능</span>
+        <span class="legend-label">범례</span>
+        <span class="badge-근">근무</span>
+        <span class="badge-연">연 연차</span>
+        <span class="badge-반">반 반차</span>
+        <span class="badge-휴">휴 휴무</span>
+        <span class="badge-직">직 휴직</span>
+        <span class="legend-note">기울임꼴 = 연차시스템 자동반영 · 슬롯 클릭으로 상태 변경</span>
       </div>
     </div>`;
 
@@ -310,9 +477,31 @@ export function render(container) {
   document.getElementById('sched-month-title').textContent =
     dayjs(state.schedule.date).format('YYYY년 M월');
 
-  document.getElementById('sched-prev').onclick  = () => navigate('prev');
-  document.getElementById('sched-next').onclick  = () => navigate('next');
-  document.getElementById('sched-today').onclick = () => navigate('today');
+  // 부서 필터
+  container.querySelector('.filter-group').addEventListener('click', e => {
+    const btn = e.target.closest('[data-dept]');
+    if (!btn) return;
+    filterDept = btn.dataset.dept;
+    container.querySelectorAll('.filter-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.dept === filterDept)
+    );
+    renderCalendar();
+  });
+
+  // 근무/휴무 필터
+  container.querySelector('.view-toggle').addEventListener('click', e => {
+    const btn = e.target.closest('[data-mode]');
+    if (!btn) return;
+    filterMode = btn.dataset.mode;
+    container.querySelectorAll('.view-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === filterMode)
+    );
+    renderCalendar();
+  });
+
+  document.getElementById('sched-prev').onclick   = () => navigate('prev');
+  document.getElementById('sched-next').onclick   = () => navigate('next');
+  document.getElementById('sched-today').onclick  = () => navigate('today');
   document.getElementById('sched-save-btn').onclick = save;
 
   refresh();
