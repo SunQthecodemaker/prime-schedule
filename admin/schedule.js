@@ -1,6 +1,9 @@
-// admin/schedule.js — 엑셀 시트 스타일 스케줄 관리 (jSpreadsheet CE v5)
-// 행 = 직원 / 열 = 날짜 / 셀 = 상태값 (근·연·반·휴·직)
-// 범위 선택 → 우클릭 일괄 변경 / 키보드 입력 / Ctrl+C/V 지원
+// admin/schedule.js — 달력형 오프표 (날짜칸 = 4×7 jSpreadsheet 셀)
+//
+// 구조: 6열 달력 (월~토), 각 날짜 = 4열×7행 jSpreadsheet 셀 블록
+// 전체 시트: 24열(6일×4슬롯) × (주당8행: 날짜헤더1 + 직원7)
+// 셀내용 = 직원이름(고정) / 배경색 = 근무상태
+// 범위선택 → 우클릭 → 상태 일괄변경
 
 import { state } from '../core/state.js';
 import {
@@ -12,36 +15,45 @@ import { toast } from '../main.js';
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 상수
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const DAYS      = 6;        // 월~토
+const SLOT_COLS = 4;        // 날짜칸 내 열 수
+const SLOT_ROWS = 7;        // 날짜칸 내 행 수
+const TOTAL_COLS = DAYS * SLOT_COLS;   // 24
+const RPW        = SLOT_ROWS + 1;      // 주당 행 수 (날짜헤더1 + 직원7 = 8)
+
 const NORM = {
   '근무':'근','근':'근','연차':'연','연':'연','반차':'반','반':'반',
   '휴무':'휴','휴가':'휴','휴':'휴','휴직':'직','직':'직',
 };
 const TO_DB = { '근':'근무','연':'연차','반':'반차','휴':'휴무','직':'휴직','':'휴무' };
-const S_CSS = {
-  '근': 'background:#ffffff;color:#111111;',
-  '연': 'background:#dbeafe;color:#1e40af;font-weight:700;',
-  '반': 'background:#e0f2fe;color:#075985;',
-  '휴': 'background:#fef9c3;color:#78350f;',
-  '직': 'background:#fce7f3;color:#9d174d;',
-  '':  'background:#f9fafb;color:#d1d5db;',
+
+const STATUS_BG = {
+  '근':  { bg:'#ffffff', color:'#1f2937' },
+  '연':  { bg:'#dbeafe', color:'#1e40af' },
+  '반':  { bg:'#e0f2fe', color:'#075985' },
+  '휴':  { bg:'#fef9c3', color:'#78350f' },
+  '직':  { bg:'#fce7f3', color:'#9d174d' },
+  '':    { bg:'#f3f4f6', color:'#9ca3af' },
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 모듈 상태
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-let mountEl = null;
-let jsi     = null;
-let rows    = [];    // [{employee, isWonJang}]
-let dates   = [];    // [{date, dayNum, dayLabel, dow, ...}]
-let leaves  = new Map();  // empId → Set<dateStr>
-let unsaved = new Map();
-let busy    = false;
+let mountEl    = null;
+let jsi        = null;
+let empRows    = [];        // [{employee, isWonJang}] 최대 28명
+let weekStarts = [];        // dayjs[] 각 주 월요일
+let statusMap  = new Map(); // `${empId}_${date}` → '근'|'연'|'반'|'휴'|'직'|''
+let leaveMap   = new Map(); // empId → Set<dateStr>
+let holidays   = new Set();
+let unsaved    = new Map();
+let curMonth   = 0;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 유틸
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function L(n) { return n < 26 ? String.fromCharCode(65+n) : L(Math.floor(n/26)-1)+String.fromCharCode(65+(n%26)); }
-const C = (col, row) => `${L(col)}${row+1}`;
+const C = (col, row) => `${L(col)}${row + 1}`;
 
 function norm(v) {
   if (!v) return '';
@@ -49,11 +61,47 @@ function norm(v) {
   return NORM[s] ?? NORM[s[0]] ?? '';
 }
 
-function colBg(col) {
-  if (col.isToday)                  return '#fffde7';
-  if (col.isSunday || col.isHoliday) return '#fff1f2';
-  if (col.isSaturday)               return '#eff6ff';
-  return '#ffffff';
+function getFirstMonday(d) {
+  const first = d.startOf('month');
+  const dow   = first.day();
+  return first.subtract(dow === 0 ? 6 : dow - 1, 'day');
+}
+
+function buildWeekStarts(d) {
+  const last  = d.endOf('month');
+  let   ws    = getFirstMonday(d);
+  const weeks = [];
+  while ((ws.isBefore(last) || ws.month() === d.month()) && weeks.length < 6) {
+    weeks.push(ws);
+    ws = ws.add(1, 'week');
+  }
+  return weeks;
+}
+
+// 셀 좌표 → { weekIdx, dayIdx, slotIdx, empIdx } 반환
+// x = 열(0-23), y = 행
+function decodeCell(x, y) {
+  const weekIdx  = Math.floor(y / RPW);
+  const rowInW   = y % RPW;
+  if (rowInW === 0) return null;            // 날짜 헤더행
+  const slotRow  = rowInW - 1;             // 0-6
+  const dayIdx   = Math.floor(x / SLOT_COLS); // 0-5 (월~토)
+  const slotCol  = x % SLOT_COLS;          // 0-3
+  const slotIdx  = slotRow * SLOT_COLS + slotCol; // 0-27
+  const empIdx   = slotIdx;
+  if (empIdx >= empRows.length) return null; // 빈 슬롯
+  if (!weekStarts[weekIdx]) return null;
+  const day = weekStarts[weekIdx].add(dayIdx, 'day');
+  return { weekIdx, dayIdx, slotIdx, empIdx, day, date: day.format('YYYY-MM-DD') };
+}
+
+function getStatus(empId, ds, dayIdx, inMonth) {
+  if (!inMonth) return '';
+  if (leaveMap.get(empId)?.has(ds)) return '연';
+  if (statusMap.has(`${empId}_${ds}`)) return statusMap.get(`${empId}_${ds}`);
+  const isSat = dayIdx === 5;
+  const isHol = holidays.has(ds);
+  return (isSat || isHol) ? '' : '근';
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -74,30 +122,37 @@ async function loadMonth() {
   if (hRes.error) throw hRes.error;
 
   state.schedule.schedules = sRes.data || [];
-  state.schedule.holidays  = new Set((hRes.data || []).map(h => h.date));
-  state.schedule.layout    = lRes.data?.[0]?.layout_data || null;
+  holidays  = new Set((hRes.data || []).map(h => h.date));
+  state.schedule.layout = lRes.data?.[0]?.layout_data || null;
+  curMonth  = d.month();
 
-  leaves.clear();
+  statusMap.clear();
+  state.schedule.schedules.forEach(s => {
+    statusMap.set(`${s.employee_id}_${s.date}`, norm(s.status) || '근');
+  });
+
+  leaveMap.clear();
   (state.leaveRequests || []).forEach(r => {
     if (r.status !== 'approved' || !Array.isArray(r.dates)) return;
-    if (!leaves.has(r.employee_id)) leaves.set(r.employee_id, new Set());
-    r.dates.forEach(ds => leaves.get(r.employee_id).add(ds));
+    if (!leaveMap.has(r.employee_id)) leaveMap.set(r.employee_id, new Set());
+    r.dates.forEach(ds => leaveMap.get(r.employee_id).add(ds));
   });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 행/열 빌드
+// 직원 순서 (최대 28명)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function buildRows() {
+function buildEmpRows() {
   const emps    = (state.employees || []).filter(e =>
     !e.is_temp && !e.retired && !(e.email?.startsWith('temp-'))
   );
   const deptMap = new Map((state.departments || []).map(d => [d.id, d]));
   const layout  = state.schedule.layout;
 
+  let out = [];
   if (Array.isArray(layout) && layout[0]?.leader_id !== undefined) {
     const em = new Map(emps.map(e => [e.id, e]));
-    const out = []; const seen = new Set();
+    const seen = new Set();
     layout.forEach(t => {
       const l = em.get(t.leader_id);
       if (l) { out.push({ employee: l, isWonJang: true }); seen.add(l.id); }
@@ -107,252 +162,266 @@ function buildRows() {
       });
     });
     emps.forEach(e => { if (!seen.has(e.id)) out.push({ employee: e, isWonJang: false }); });
-    return out;
+  } else {
+    const ORDER = ['원장','진료실','경영지원실','기공실'];
+    const grp   = new Map();
+    emps.forEach(e => {
+      const n = deptMap.get(e.department_id)?.name || '기타';
+      if (!grp.has(n)) grp.set(n, []);
+      grp.get(n).push(e);
+    });
+    const depts = [...ORDER, ...Array.from(grp.keys()).filter(k => !ORDER.includes(k))];
+    depts.forEach(n => (grp.get(n) || []).forEach(e =>
+      out.push({ employee: e, isWonJang: n.includes('원장') })
+    ));
   }
-
-  const ORDER = ['원장','진료실','경영지원실','기공실'];
-  const grp = new Map();
-  emps.forEach(e => {
-    const n = deptMap.get(e.department_id)?.name || '기타';
-    if (!grp.has(n)) grp.set(n, []);
-    grp.get(n).push(e);
-  });
-  const depts = [...ORDER, ...Array.from(grp.keys()).filter(d => !ORDER.includes(d))];
-  const out = [];
-  depts.forEach(n => (grp.get(n) || []).forEach(e =>
-    out.push({ employee: e, isWonJang: n.includes('원장') })
-  ));
-  return out;
+  return out.slice(0, SLOT_COLS * SLOT_ROWS); // 최대 28명
 }
 
-function buildDates() {
-  const d   = dayjs(state.schedule.date);
-  const n   = d.daysInMonth();
-  const hol = state.schedule.holidays;
-  const tod = dayjs().format('YYYY-MM-DD');
-  return Array.from({ length: n }, (_, i) => {
-    const dt  = d.date(i + 1);
-    const ds  = dt.format('YYYY-MM-DD');
-    const dow = dt.day();
-    return {
-      date: ds, dayNum: i+1, dayLabel: '일월화수목금토'[dow], dow,
-      isWeekend: dow === 0 || dow === 6,
-      isSunday:  dow === 0,
-      isSaturday: dow === 6,
-      isHoliday: hol.has(ds),
-      isToday:   ds === tod,
-    };
-  });
-}
-
-function buildData(rowList, dateList) {
-  const sm = new Map();
-  (state.schedule.schedules || []).forEach(s => sm.set(`${s.employee_id}_${s.date}`, s.status));
-
-  return rowList.map(({ employee: e }) => {
-    const el  = leaves.get(e.id);
-    const row = [e.name];
-    dateList.forEach(col => {
-      if (el?.has(col.date)) { row.push('연'); return; }
-      const raw = sm.get(`${e.id}_${col.date}`);
-      if (raw !== undefined) { row.push(norm(raw) || '근'); return; }
-      row.push(col.isWeekend || col.isHoliday ? '' : '근');
-    });
-    const work = row.slice(1).filter(v => v === '근').length;
-    const off  = row.slice(1).filter(v => ['연','반','휴','직'].includes(v)).length;
-    row.push(work || '', off || '');
-    return row;
-  });
-}
-
-function buildStyles(rowList, dateList, data, vm) {
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 그리드 데이터/스타일 빌드
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function buildGrid() {
+  const today  = dayjs().format('YYYY-MM-DD');
+  const data   = [];
   const styles = {};
-  const n = dateList.length;
+  const rowH   = {};
 
-  rowList.forEach(({ employee: e, isWonJang }, ri) => {
-    styles[C(0, ri)] = isWonJang
-      ? 'background:#f0fdf4;color:#065f46;font-weight:700;'
-      : 'background:#f8fafc;color:#374151;';
+  weekStarts.forEach((wkStart, wi) => {
+    const dateRowY = wi * RPW;
+    rowH[dateRowY] = 30;
 
-    dateList.forEach((col, ci) => {
-      const val = data[ri][ci + 1];
-      let s;
-      if (vm === 'working' && val !== '근') s = 'background:#f1f5f9;color:#cbd5e1;';
-      else if (vm === 'off' && (val === '근' || val === '')) s = 'background:#f1f5f9;color:#cbd5e1;';
-      else if (val && val !== '근') s = S_CSS[val] ?? S_CSS[''];
-      else s = `background:${colBg(col)};color:${val === '근' ? '#374151' : '#d1d5db'};`;
-      if (leaves.get(e.id)?.has(col.date)) s += 'font-style:italic;';
-      if (isWonJang) s += 'font-weight:700;';
-      styles[C(ci + 1, ri)] = s;
-    });
+    // ── 날짜 헤더행 ──────────────────────────────────
+    const dateRow = [];
+    for (let di = 0; di < DAYS; di++) {
+      const day     = wkStart.add(di, 'day');
+      const ds      = day.format('YYYY-MM-DD');
+      const inMonth = day.month() === curMonth;
+      const isSat   = di === 5;
+      const isHol   = holidays.has(ds);
+      const isToday = ds === today;
 
-    styles[C(n + 1, ri)] = 'background:#f0fdf4;color:#065f46;font-weight:700;text-align:center;';
-    styles[C(n + 2, ri)] = 'background:#fef9c3;color:#78350f;font-weight:700;text-align:center;';
+      const bg    = isToday ? '#fef08a' : isSat ? '#e0e7ff' : isHol ? '#ffe4e6' : '#fef9c3';
+      const color = !inMonth ? '#9ca3af' : isSat ? '#1d4ed8' : isHol ? '#dc2626' : '#374151';
+      const label = inMonth ? String(day.date()) : day.format('M/D');
+
+      for (let sc = 0; sc < SLOT_COLS; sc++) {
+        const x = di * SLOT_COLS + sc;
+        dateRow.push(sc === 0 ? label : '');
+        styles[C(x, dateRowY)] =
+          `background:${bg};color:${color};font-weight:700;` +
+          `text-align:${sc===0?'left':'center'};` +
+          `font-size:${sc===0?'13':'11'}px;` +
+          `border-right:${(sc===SLOT_COLS-1)?'2px solid #94a3b8':'1px solid #e5e7eb'};` +
+          `border-bottom:2px solid #64748b;padding-left:${sc===0?'4':'0'}px;`;
+      }
+    }
+    data.push(dateRow);
+
+    // ── 직원 행 (7행) ────────────────────────────────
+    for (let sr = 0; sr < SLOT_ROWS; sr++) {
+      const y = dateRowY + sr + 1;
+      rowH[y]  = 26;
+      const row = [];
+
+      for (let di = 0; di < DAYS; di++) {
+        const day     = wkStart.add(di, 'day');
+        const ds      = day.format('YYYY-MM-DD');
+        const inMonth = day.month() === curMonth;
+        const isSat   = di === 5;
+        const isHol   = holidays.has(ds);
+        const isToday = ds === today;
+
+        for (let sc = 0; sc < SLOT_COLS; sc++) {
+          const x       = di * SLOT_COLS + sc;
+          const slotIdx = sr * SLOT_COLS + sc;
+          const emp     = empRows[slotIdx];
+          const name    = emp ? emp.employee.name : '';
+          row.push(name);
+
+          let s;
+          if (!emp || !inMonth) {
+            const dayBg = !inMonth ? '#f8fafc'
+                        : isToday  ? '#fffde7'
+                        : isSat    ? '#f0f4ff'
+                        : isHol    ? '#fff5f5'
+                        : '#fafafa';
+            s = `background:${dayBg};color:#d1d5db;`;
+          } else {
+            const status  = getStatus(emp.employee.id, ds, di, inMonth);
+            const isSys   = leaveMap.get(emp.employee.id)?.has(ds);
+            const { bg, color } = STATUS_BG[status] ?? STATUS_BG[''];
+            const dayTint = isToday ? '#fffde7' : isSat ? '#eff6ff' : isHol ? '#fff1f2' : bg;
+            const finalBg = (status === '' || status === '근') ? dayTint : bg;
+            s = `background:${finalBg};color:${color};text-align:center;font-size:11.5px;`;
+            if (emp.isWonJang) s += 'font-weight:700;';
+            if (isSys) s += 'font-style:italic;';
+          }
+          s += `border-right:${(sc===SLOT_COLS-1)?'2px solid #94a3b8':'1px solid #f0f0f0'};` +
+               `border-bottom:1px solid #f0f0f0;`;
+          styles[C(x, y)] = s;
+        }
+      }
+      data.push(row);
+    }
   });
-  return styles;
+
+  return { data, styles, rowH };
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// jSpreadsheet 생성 (v5 API)
+// jSpreadsheet 생성
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function createSheet(el, rowList, dateList, data) {
+function createSheet(el) {
   if (jsi) { try { jspreadsheet.destroy(el); } catch(_) {} jsi = null; }
   el.innerHTML = '';
 
-  const vm     = state.schedule.view || 'all';
-  const styles = buildStyles(rowList, dateList, data, vm);
-  const label  = dayjs(state.schedule.date).format('YYYY년 M월');
+  const { data, styles, rowH } = buildGrid();
+  const label = dayjs(state.schedule.date).format('YYYY년 M월');
+
+  // 24열 컬럼 정의 (6일 × 4슬롯)
+  const columns = [];
+  for (let di = 0; di < DAYS; di++) {
+    for (let sc = 0; sc < SLOT_COLS; sc++) {
+      columns.push({
+        title: sc === 0 ? ['월','화','수','목','금','토'][di] : '',
+        width: 50,
+        type: 'text',
+        readOnly: true,
+        align: 'center',
+      });
+    }
+  }
 
   const sheets = jspreadsheet(el, {
     worksheets: [{
       data,
-      columns: [
-        { title: '직원명', width: 80, type: 'text', readOnly: true, align: 'center' },
-        ...dateList.map(col => ({
-          title: `${col.dayNum}\n${col.dayLabel}`,
-          width: 34,
-          type: 'text',
-          align: 'center',
-        })),
-        { title: '근무', width: 40, type: 'text', readOnly: true, align: 'center' },
-        { title: '휴무', width: 40, type: 'text', readOnly: true, align: 'center' },
-      ],
-      nestedHeaders: [[
-        { title: '직원', colspan: 1 },
-        { title: label, colspan: dateList.length },
-        { title: '합계', colspan: 2 },
-      ]],
-      freezeColumns: 1,
+      columns,
+      nestedHeaders: [[{ title: label, colspan: TOTAL_COLS }]],
+      rows: rowH,
       style: styles,
       tableWidth: '100%',
-      allowDeleteColumn: false,
-      allowInsertColumn: false,
-      allowDeleteRow: false,
-      allowInsertRow: false,
-      columnDrag: false,
-      rowDrag: true,
-      columnSorting: false,
-      search: false,
-      pagination: false,
+      allowDeleteColumn: false, allowInsertColumn: false,
+      allowDeleteRow:    false, allowInsertRow:    false,
+      columnDrag: false, rowDrag: false,
+      columnSorting: false, search: false, pagination: false,
+      freezeRows: 0, freezeColumns: 0,
     }],
-    onchange:    onCellChange,
-    onmoverow:   onMoveRow,
     contextMenu: ctxMenu,
   });
   jsi = sheets[0];
 
-  // 연차 셀 readOnly
-  rowList.forEach(({ employee: e }, ri) => {
-    leaves.get(e.id)?.forEach(ds => {
-      const ci = dateList.findIndex(d => d.date === ds);
-      if (ci >= 0) try { jsi.setReadOnly(C(ci + 1, ri), true); } catch(_) {}
-    });
-  });
-
-  colorHeaders(dateList);
-  rows  = rowList;
-  dates = dateList;
+  styleHeaders(label);
 }
 
-function colorHeaders(dateList) {
+function styleHeaders(label) {
   requestAnimationFrame(() => {
     const trs = mountEl?.querySelectorAll('thead tr');
-    const tds = trs?.[trs.length - 1]?.querySelectorAll('td');
-    if (!tds) return;
-    dateList.forEach((col, ci) => {
-      const td = tds[ci + 2]; if (!td) return;
-      if (col.isToday) {
-        td.style.background  = '#fef3c7';
-        td.style.fontWeight  = '700';
-      } else if (col.isSunday || col.isHoliday) {
-        td.style.color      = '#ef4444';
-        td.style.background = '#fff1f2';
-      } else if (col.isSaturday) {
-        td.style.color      = '#3b82f6';
-        td.style.background = '#eff6ff';
+    if (!trs) return;
+
+    // 최상단 월 헤더
+    const top = trs[0]?.querySelectorAll('td');
+    if (top?.[1]) {
+      Object.assign(top[1].style, {
+        background: '#1e3a5f', color: '#fff', fontWeight: '700',
+        fontSize: '14px', textAlign: 'center', padding: '6px',
+      });
+    }
+
+    // 요일 헤더 (월~토, 각 4열씩)
+    const dayRow = trs[1]?.querySelectorAll('td');
+    if (!dayRow) return;
+    const dayNames = ['월','화','수','목','금','토'];
+    dayRow.forEach((td, i) => {
+      if (i === 0) return;
+      const di = Math.floor((i - 1) / SLOT_COLS);
+      const sc = (i - 1) % SLOT_COLS;
+      if (sc === 0) {
+        const isSat = di === 5;
+        Object.assign(td.style, {
+          background: '#1e3a5f',
+          color: isSat ? '#93c5fd' : '#fff',
+          fontWeight: '700', fontSize: '12px', textAlign: 'center',
+          borderRight: '2px solid #94a3b8',
+        });
+        td.textContent = dayNames[di] || '';
+      } else {
+        Object.assign(td.style, {
+          background: '#1e3a5f', color: '#1e3a5f',
+          borderRight: di < 5 && sc === SLOT_COLS - 1 ? '2px solid #94a3b8' : '1px solid #2d4a6f',
+        });
+        td.textContent = '';
       }
     });
   });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 이벤트 핸들러
+// 컨텍스트 메뉴 & 상태 적용
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function onCellChange(inst, cell, x, y, value) {
-  if (busy) return;
-  if (x === 0 || x > dates.length) return;
-  const col = dates[x - 1], row = rows[y];
-  if (!col || !row) return;
-  if (leaves.get(row.employee.id)?.has(col.date)) {
-    busy = true; jsi.setValue(C(x, y), '연', false); busy = false; return;
-  }
-  const n = norm(value);
-  if (n !== value) { busy = true; jsi.setValue(C(x, y), n, false); busy = false; }
-
-  const vm = state.schedule.view || 'all';
-  let s;
-  if (vm === 'working' && n !== '근') s = 'background:#f1f5f9;color:#cbd5e1;';
-  else if (vm === 'off' && (n === '근' || n === '')) s = 'background:#f1f5f9;color:#cbd5e1;';
-  else if (n && n !== '근') s = S_CSS[n] ?? S_CSS[''];
-  else s = `background:${colBg(col)};color:${n === '근' ? '#374151' : '#d1d5db'};`;
-  if (row.isWonJang) s += 'font-weight:700;';
-  jsi.setStyle({ [C(x, y)]: s });
-
-  unsaved.set(`${row.employee.id}_${col.date}`, {
-    empId: row.employee.id, date: col.date, status: n || '근',
-  });
-  updateSaveBtn();
-  refreshSummary(y);
-}
-
-function onMoveRow(ws, from, to) {
-  const [m] = rows.splice(from, 1);
-  rows.splice(to, 0, m);
-  saveLayout().catch(e => console.warn('레이아웃 저장 실패:', e));
-}
-
 function ctxMenu(ws, x, y, e, items) {
-  if (x === 0 || x > dates.length) return items;
   return [
-    { title: '✅ 근무', onclick: () => fill('근') },
-    { title: '🏖 연차', onclick: () => fill('연') },
-    { title: '🌙 반차', onclick: () => fill('반') },
-    { title: '😴 휴무', onclick: () => fill('휴') },
-    { title: '⏸ 휴직', onclick: () => fill('직') },
-    { title: '✖ 초기화', onclick: () => fill('') },
-    { type: 'line' },
-    ...items,
+    { title: '✅ 근무', onclick: () => applyStatus('근') },
+    { title: '🏖 연차', onclick: () => applyStatus('연') },
+    { title: '🌙 반차', onclick: () => applyStatus('반') },
+    { title: '😴 휴무', onclick: () => applyStatus('휴') },
+    { title: '⏸ 휴직', onclick: () => applyStatus('직') },
+    { title: '✖ 초기화', onclick: () => applyStatus('') },
+    { type: 'line' }, ...items,
   ];
 }
 
-function fill(status) {
+function applyStatus(status) {
   const sel = jsi?.getSelected?.();
-  if (!sel || !sel.length) return;
+  if (!sel?.length) return;
   const xs = sel.map(s => s.x), ys = sel.map(s => s.y);
   const x1 = Math.min(...xs), x2 = Math.max(...xs);
   const y1 = Math.min(...ys), y2 = Math.max(...ys);
-  for (let y = y1; y <= y2; y++)
+  const styleUpdates = {};
+
+  for (let y = y1; y <= y2; y++) {
     for (let x = x1; x <= x2; x++) {
-      if (x === 0 || x > dates.length) continue;
-      if (leaves.get(rows[y]?.employee?.id)?.has(dates[x-1]?.date)) continue;
-      jsi.setValue(C(x, y), status, true);
+      const info = decodeCell(x, y);
+      if (!info) continue;
+      const { empIdx, dayIdx, day, date } = info;
+      const emp = empRows[empIdx];
+      if (!emp) continue;
+
+      // 연차시스템 자동 연차는 변경 불가
+      if (leaveMap.get(emp.employee.id)?.has(date) && status === '연') continue;
+
+      const inMonth = day.month() === curMonth;
+      if (!inMonth) continue;
+
+      const isSat   = dayIdx === 5;
+      const isHol   = holidays.has(date);
+      const isToday = date === dayjs().format('YYYY-MM-DD');
+      const isSys   = leaveMap.get(emp.employee.id)?.has(date);
+
+      const { bg, color } = STATUS_BG[status] ?? STATUS_BG[''];
+      const dayTint = isToday ? '#fffde7' : isSat ? '#eff6ff' : isHol ? '#fff1f2' : bg;
+      const finalBg = (status === '' || status === '근') ? dayTint : bg;
+
+      let s = `background:${finalBg};color:${color};text-align:center;font-size:11.5px;`;
+      if (emp.isWonJang) s += 'font-weight:700;';
+      if (isSys) s += 'font-style:italic;';
+      s += `border-right:${(x%SLOT_COLS===SLOT_COLS-1)?'2px solid #94a3b8':'1px solid #f0f0f0'};border-bottom:1px solid #f0f0f0;`;
+      styleUpdates[C(x, y)] = s;
+
+      // 저장 대상
+      statusMap.set(`${emp.employee.id}_${date}`, status);
+      unsaved.set(`${emp.employee.id}_${date}`, {
+        empId: emp.employee.id, date, status: status || '근',
+      });
     }
-}
-
-function refreshSummary(ri) {
-  const n = dates.length;
-  let work = 0, off = 0;
-  for (let ci = 1; ci <= n; ci++) {
-    const v = jsi.getValue(C(ci, ri));
-    if (v === '근') work++;
-    else if (['연','반','휴','직'].includes(v)) off++;
   }
-  busy = true;
-  jsi.setValue(C(n + 1, ri), work || '', false);
-  jsi.setValue(C(n + 2, ri), off  || '', false);
-  busy = false;
+  if (Object.keys(styleUpdates).length) jsi.setStyle(styleUpdates);
+  updateSaveBtn();
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 저장 / 공휴일 / 내비게이션
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function updateSaveBtn() {
   const btn = document.getElementById('sched-save-btn');
   if (!btn) return;
@@ -361,9 +430,6 @@ function updateSaveBtn() {
   btn.textContent = n > 0 ? `💾 저장 (${n}건)` : '💾 저장';
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 저장 / 레이아웃
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function save() {
   if (!unsaved.size) return;
   const btn = document.getElementById('sched-save-btn');
@@ -384,66 +450,21 @@ async function save() {
   } finally { updateSaveBtn(); }
 }
 
-async function saveLayout() {
-  const month = dayjs(state.schedule.date).format('YYYY-MM-01');
-  const teams = []; let cur = null;
-  rows.forEach(({ employee: e, isWonJang }) => {
-    if (isWonJang) { cur = { leader_id: e.id, members: [] }; teams.push(cur); }
-    else { (cur ?? (cur = teams[0] ?? (teams[0] = { leader_id: null, members: [] }))).members.push(e.id); }
-  });
-  const { error } = await upsertTeamLayout(month, teams);
-  if (error) throw error;
-}
-
-function setView(vm) {
-  state.schedule.view = vm;
-  document.querySelectorAll('.view-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.mode === vm)
-  );
-  if (!jsi) return;
-  const data = jsi.getData();
-  jsi.setStyle(buildStyles(rows, dates, data, vm));
-}
-
 async function toggleHoliday() {
-  const ds = prompt('날짜 입력 (YYYY-MM-DD)\n※ 이미 등록된 날짜 입력 시 해제');
+  const ds = prompt('날짜 입력 (YYYY-MM-DD)\n※ 이미 등록된 날짜면 해제');
   if (!ds || !/^\d{4}-\d{2}-\d{2}$/.test(ds)) return;
-  const hol = state.schedule.holidays;
-  if (hol.has(ds)) {
+  if (holidays.has(ds)) {
     const { error } = await removeHoliday(ds);
     if (error) { toast(error.message, 'error'); return; }
-    hol.delete(ds);
+    holidays.delete(ds);
   } else {
     const { error } = await addHoliday(ds);
     if (error) { toast(error.message, 'error'); return; }
-    hol.add(ds);
+    holidays.add(ds);
   }
   await refresh();
 }
 
-function weeklyCheck() {
-  const warns = []; if (!jsi) return;
-  rows.forEach(({ employee: e }, ri) => {
-    const wm = new Map();
-    dates.forEach((col, ci) => {
-      if (col.isWeekend || col.isHoliday) return;
-      const wk = dayjs(col.date).week();
-      if (!wm.has(wk)) wm.set(wk, { biz: 0, work: 0 });
-      const w = wm.get(wk); w.biz++;
-      if (jsi.getValue(C(ci + 1, ri)) === '근') w.work++;
-    });
-    wm.forEach((w, wk) => {
-      const exp = Math.min(w.biz, 5);
-      if (w.work < exp) warns.push(`• ${e.name} ${wk}주: 근무 ${w.work}일 / 기대 ${exp}일`);
-    });
-  });
-  if (!warns.length) toast('✅ 모든 직원 주간 근무 정상', 'success');
-  else alert('⚠️ 주간 근무 미달\n\n' + warns.join('\n'));
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 내비게이션 / 새로고침
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function navigate(dir) {
   if (unsaved.size && !confirm('저장 안 된 변경사항이 있습니다. 이동할까요?')) return;
   unsaved.clear();
@@ -463,10 +484,9 @@ async function refresh() {
   mountEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div>로딩 중…</div></div>';
   try {
     await loadMonth();
-    const r    = buildRows();
-    const d    = buildDates();
-    const data = buildData(r, d);
-    createSheet(mountEl, r, d, data);
+    empRows    = buildEmpRows();
+    weekStarts = buildWeekStarts(dayjs(state.schedule.date));
+    createSheet(mountEl);
     unsaved.clear();
     updateSaveBtn();
   } catch (err) {
@@ -481,14 +501,11 @@ export function render(container) {
   container.innerHTML = `
     <div class="sheet-wrap" style="height:calc(100vh - 56px - 44px - 40px);">
       <div class="sheet-toolbar">
-        <div class="view-toggle">
-          <button class="view-btn active" data-mode="all">통합 보기</button>
-          <button class="view-btn" data-mode="working">근무표</button>
-          <button class="view-btn" data-mode="off">휴무표</button>
+        <div style="font-size:12px;color:var(--text-2);">
+          셀 또는 범위 선택 → <strong>우클릭</strong>으로 상태 변경
         </div>
         <div class="action-btns">
-          <button id="sched-check-btn"    class="btn-secondary">⚠️ 주간 검수</button>
-          <button id="sched-holiday-btn"  class="btn-secondary">🗓 공휴일</button>
+          <button id="sched-holiday-btn" class="btn-secondary">🗓 공휴일</button>
           <button id="sched-save-btn" disabled class="btn-primary">💾 저장</button>
         </div>
       </div>
@@ -501,12 +518,12 @@ export function render(container) {
       <div id="sched-mount" class="sheet-mount"></div>
       <div class="sheet-legend">
         <span class="legend-label">범례</span>
-        <span class="badge-근">근 = 근무</span>
-        <span class="badge-연">연 = 연차</span>
-        <span class="badge-반">반 = 반차</span>
-        <span class="badge-휴">휴 = 휴무</span>
-        <span class="badge-직">직 = 휴직</span>
-        <span class="legend-note">셀 선택 후 우클릭 → 일괄 변경 · 키보드 직접 입력 · Ctrl+C/V 지원</span>
+        <span class="badge-근">■ 근무</span>
+        <span class="badge-연">■ 연차</span>
+        <span class="badge-반">■ 반차</span>
+        <span class="badge-휴">■ 휴무</span>
+        <span class="badge-직">■ 휴직</span>
+        <span class="legend-note">기울임꼴 = 연차시스템 자동반영</span>
       </div>
     </div>`;
 
@@ -514,15 +531,10 @@ export function render(container) {
   document.getElementById('sched-month-title').textContent =
     dayjs(state.schedule.date).format('YYYY년 M월');
 
-  container.querySelector('.view-toggle').addEventListener('click', e => {
-    const b = e.target.closest('.view-btn');
-    if (b) setView(b.dataset.mode);
-  });
-  document.getElementById('sched-prev').onclick      = () => navigate('prev');
-  document.getElementById('sched-next').onclick      = () => navigate('next');
-  document.getElementById('sched-today').onclick     = () => navigate('today');
-  document.getElementById('sched-save-btn').onclick  = save;
-  document.getElementById('sched-check-btn').onclick = weeklyCheck;
+  document.getElementById('sched-prev').onclick        = () => navigate('prev');
+  document.getElementById('sched-next').onclick        = () => navigate('next');
+  document.getElementById('sched-today').onclick       = () => navigate('today');
+  document.getElementById('sched-save-btn').onclick    = save;
   document.getElementById('sched-holiday-btn').onclick = toggleHoliday;
 
   refresh();
