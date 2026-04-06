@@ -427,9 +427,13 @@ function styleHeaders(label) {
 
 // document 레벨 캡처로 바인딩 → jSpreadsheet 내부 핸들러보다 먼저 실행
 function _bindKeyboard() {
-  if (_kbEl) document.removeEventListener('keydown', _kbEl, true);
+  if (_kbEl) {
+    document.removeEventListener('keydown', _kbEl, true);
+    document.removeEventListener('paste',   _onPaste, true);
+  }
   _kbEl = _onKeydown;
-  document.addEventListener('keydown', _kbEl, true);
+  document.addEventListener('keydown', _kbEl,     true);
+  document.addEventListener('paste',   _onPaste,  true);
 }
 
 function _selRange() {
@@ -467,14 +471,30 @@ function _onKeydown(e) {
   if (!ctrl) return;
 
   const sel = jsi.getSelected?.();
-  if (!sel?.length) return; // 선택된 셀 없으면 브라우저 기본 동작
+  if (!sel?.length) return; // 선택 없으면 브라우저 기본 동작
 
   const key = e.key.toLowerCase();
   if (key === 'c') { e.preventDefault(); e.stopPropagation(); _doCopy(); }
   else if (key === 'x') { e.preventDefault(); e.stopPropagation(); _doCut(); }
-  else if (key === 'v') { e.preventDefault(); e.stopPropagation(); _doPasteFromClipboard(); }
+  // V는 paste 이벤트가 자연히 발생 — _onPaste에서 처리
   else if (key === 'z') { e.preventDefault(); e.stopPropagation(); undoAction(); }
   else if (key === 'y') { e.preventDefault(); e.stopPropagation(); redoAction(); }
+}
+
+function _onPaste(e) {
+  if (!jsi) return;
+  const sel = jsi.getSelected?.();
+  if (!sel?.length) return; // 선택 없으면 브라우저 기본 동작
+
+  e.preventDefault(); e.stopPropagation();
+  const text = e.clipboardData?.getData('text/plain') || '';
+  if (text.trim()) {
+    // 외부 Excel 포함 — 탭 구분 텍스트 파싱
+    const grid = text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split('\t'));
+    _doPaste(grid);
+  } else if (_clipBuffer) {
+    _doPaste(_clipBuffer);
+  }
 }
 
 function _doCopy() {
@@ -513,21 +533,9 @@ function _doCut() {
   toast('✂ 잘라내기 완료', 'info');
 }
 
-function _doPasteFromClipboard() {
-  navigator.clipboard.readText()
-    .then(text => {
-      if (text.trim()) {
-        const grid = text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split('\t'));
-        _doPaste(grid);
-      } else if (_clipBuffer) {
-        _doPaste(_clipBuffer);
-      }
-    })
-    .catch(() => {
-      // 권한 없으면 내부 버퍼 사용
-      if (_clipBuffer) _doPaste(_clipBuffer);
-      else toast('클립보드 접근 권한이 없습니다. 내부 복사본만 사용 가능합니다.', 'error');
-    });
+function _doPasteFromBuffer() {
+  if (_clipBuffer) _doPaste(_clipBuffer);
+  else toast('복사된 내용이 없습니다. 먼저 셀을 복사하세요.', 'info');
 }
 
 function _doPaste(grid) {
@@ -568,9 +576,7 @@ function _doPaste(grid) {
   }
 }
 
-function _copyToClipboard() {
-  _doCopy();
-}
+function _copyToClipboard() { _doCopy(); }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 컨텍스트 메뉴 & 상태 적용
@@ -586,7 +592,7 @@ function ctxMenu(ws, x, y, e, items) {
     { type: 'line' },
     { title: '📋 복사 (Ctrl+C)',       onclick: _copyToClipboard },
     { title: '✂ 잘라내기 (Ctrl+X)',   onclick: () => document.execCommand('cut') },
-    { title: '📋 붙여넣기 (Ctrl+V)',  onclick: () => { if (_clipBuffer) _doPaste(_clipBuffer); } },
+    { title: '📋 붙여넣기 (Ctrl+V)',  onclick: _doPasteFromBuffer },
     { type: 'line' },
     { title: '↩ 되돌리기 (Ctrl+Z)',   onclick: undoAction },
     { title: '↪ 다시실행 (Ctrl+Y)',   onclick: redoAction },
