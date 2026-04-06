@@ -101,6 +101,16 @@ export const createDocRequest = (data) =>
 export const updateDocRequest = (id, data) =>
   supabase.from('document_requests').update(data).eq('id', id);
 
+// ── 월간 달력 (오프표) ──────────────────────────────────────
+export const fetchMonthCalendar = (month) =>
+  supabase.from('monthly_calendars').select('*').eq('month', month).single();
+
+export const upsertMonthCalendar = (month, gridData, gridStyles) =>
+  supabase.from('monthly_calendars').upsert(
+    { month, grid_data: gridData, grid_styles: gridStyles, updated_at: new Date().toISOString() },
+    { onConflict: 'month' }
+  );
+
 // ── 제출된 서류 ─────────────────────────────────────────────
 export const fetchSubmittedDocs = () =>
   supabase.from('submitted_documents').select('*').order('created_at', { ascending: false });
