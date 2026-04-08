@@ -193,6 +193,7 @@ async function handleSubmit() {
 
   const { data, error } = await createLeave({
     employee_id: state.user.id,
+    employee_name: state.user.name,
     dates,
     reason: reason || null,
     status: 'pending',
