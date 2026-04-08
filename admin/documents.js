@@ -69,7 +69,8 @@ async function renderSubmitted(el) {
   };
 
   el.innerHTML = list.map(doc => {
-    const emp = (state.employees || []).find(e => e.id === doc.employee_id);
+    const empName = doc.employee_name || (state.employees || []).find(e => e.id === doc.employee_id)?.name || '(알 수 없음)';
+    const docName = doc.document_name || doc.template_name || '-';
 
     let actionBtns = '';
     if (isManager()) {
@@ -102,11 +103,11 @@ async function renderSubmitted(el) {
         <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div style="flex:1;min-width:200px;">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-              <strong>${emp?.name || '(알 수 없음)'}</strong>
+              <strong>${empName}</strong>
               <span class="badge ${BADGE_CLASS[doc.status] || ''}">${STATUS_LABEL[doc.status] || doc.status}</span>
               <span class="text-xs text-muted">${dayjs(doc.created_at).format('YYYY.MM.DD HH:mm')}</span>
             </div>
-            <div class="text-sm mb-2"><span class="text-muted">서류명:</span> <strong>${doc.document_name || '-'}</strong></div>
+            <div class="text-sm mb-2"><span class="text-muted">서류명:</span> <strong>${docName}</strong></div>
             ${doc.file_url ? `
               <div class="text-sm mb-2">
                 <span class="text-muted">첨부파일:</span>

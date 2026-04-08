@@ -58,6 +58,10 @@ let _histIdx   = -1;
 // 클립보드 내부 버퍼 (2D status 배열)
 let _clipBuffer = null;
 
+// 직원 슬롯 이동용 버퍼 (단일 셀 잘라내기 → 붙여넣기로 순서 변경)
+let _cutSlotIdx = null;   // 잘라낸 slotIdx (0-27)
+let _cutCellPos = null;   // { x, y } 시각적 표시용
+
 // 이벤트 바인딩된 엘리먼트
 let _kbEl = null;
 
@@ -226,8 +230,19 @@ function buildEmpRows() {
   const layout  = state.schedule.layout;
 
   let out = [];
-  if (Array.isArray(layout) && layout[0]?.leader_id !== undefined) {
-    const em   = new Map(emps.map(e => [e.id, e]));
+  const em = new Map(emps.map(e => [e.id, e]));
+
+  // 1) flat 배열 레이아웃: [{ id, isWonJang }] — 직접 순서 지정
+  if (Array.isArray(layout) && layout[0]?.id !== undefined && layout[0]?.leader_id === undefined) {
+    const seen = new Set();
+    layout.forEach(({ id, isWonJang }) => {
+      const e = em.get(id);
+      if (e && !seen.has(id)) { out.push({ employee: e, isWonJang: !!isWonJang }); seen.add(id); }
+    });
+    emps.forEach(e => { if (!seen.has(e.id)) out.push({ employee: e, isWonJang: false }); });
+
+  // 2) 팀 레이아웃: [{ leader_id, members }]
+  } else if (Array.isArray(layout) && layout[0]?.leader_id !== undefined) {
     const seen = new Set();
     layout.forEach(t => {
       const l = em.get(t.leader_id);
@@ -238,6 +253,8 @@ function buildEmpRows() {
       });
     });
     emps.forEach(e => { if (!seen.has(e.id)) out.push({ employee: e, isWonJang: false }); });
+
+  // 3) 기본: 부서순
   } else {
     const ORDER = ['원장','진료실','경영지원실','기공실'];
     const grp   = new Map();
@@ -471,12 +488,20 @@ function _onKeydown(e) {
   if (!ctrl) return;
 
   const sel = jsi.getSelected?.();
-  if (!sel?.length) return; // 선택 없으면 브라우저 기본 동작
+  if (!sel?.length) return;
 
   const key = e.key.toLowerCase();
   if (key === 'c') { e.preventDefault(); e.stopPropagation(); _doCopy(); }
   else if (key === 'x') { e.preventDefault(); e.stopPropagation(); _doCut(); }
-  // V는 paste 이벤트가 자연히 발생 — _onPaste에서 처리
+  // V: paste 이벤트(_onPaste)에서 처리 — 단, 슬롯 이동 버퍼가 있으면 여기서 처리
+  else if (key === 'v' && _cutSlotIdx !== null) {
+    e.preventDefault(); e.stopPropagation();
+    const range = _selRange();
+    if (range) {
+      const info = decodeCell(range.x1, range.y1);
+      if (info) _doSlotSwap(info.slotIdx, range.x1, range.y1);
+    }
+  }
   else if (key === 'z') { e.preventDefault(); e.stopPropagation(); undoAction(); }
   else if (key === 'y') { e.preventDefault(); e.stopPropagation(); redoAction(); }
 }
@@ -484,12 +509,24 @@ function _onKeydown(e) {
 function _onPaste(e) {
   if (!jsi) return;
   const sel = jsi.getSelected?.();
-  if (!sel?.length) return; // 선택 없으면 브라우저 기본 동작
+  if (!sel?.length) return;
 
   e.preventDefault(); e.stopPropagation();
+
+  // 슬롯 이동 모드이면 직원 위치 교환
+  if (_cutSlotIdx !== null) {
+    const range = _selRange();
+    if (range) {
+      const info = decodeCell(range.x1, range.y1);
+      if (info) { _doSlotSwap(info.slotIdx, range.x1, range.y1); return; }
+    }
+    _cutSlotIdx = null; _cutCellPos = null;
+    return;
+  }
+
+  // 일반 상태값 붙여넣기
   const text = e.clipboardData?.getData('text/plain') || '';
   if (text.trim()) {
-    // 외부 Excel 포함 — 탭 구분 텍스트 파싱
     const grid = text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split('\t'));
     _doPaste(grid);
   } else if (_clipBuffer) {
@@ -507,30 +544,90 @@ function _doCopy() {
 }
 
 function _doCut() {
-  const rows = _selStatusGrid();
-  if (!rows) return;
-  _clipBuffer = rows;
-  const text = rows.map(r => r.join('\t')).join('\n');
-  navigator.clipboard.writeText(text).catch(() => {});
-
-  // 선택 영역 초기화
-  _pushHistory();
   const range = _selRange();
+  if (!range) return;
   const { x1, x2, y1, y2 } = range;
-  const styleUpdates = {};
-  for (let y = y1; y <= y2; y++) {
-    for (let x = x1; x <= x2; x++) {
-      const info = decodeCell(x, y);
-      if (!info || info.day.month() !== curMonth) continue;
-      const emp = empRows[info.empIdx];
-      if (!emp || leaveMap.get(emp.employee.id)?.has(info.date)) continue;
-      styleUpdates[C(x, y)] = cellStyle(emp, x, info.dayIdx, info.date, '');
-      statusMap.set(`${emp.employee.id}_${info.date}`, '');
-      unsaved.set(`${emp.employee.id}_${info.date}`, { empId: emp.employee.id, date: info.date, status: '근' });
+  const isSingleCell = (x1 === x2 && y1 === y2);
+
+  if (isSingleCell) {
+    // ── 단일 셀: 직원 슬롯 이동 모드 ──────────────────
+    const info = decodeCell(x1, y1);
+    if (!info || !empRows[info.slotIdx]) {
+      toast('빈 슬롯입니다', 'info'); return;
     }
+    _cutSlotIdx = info.slotIdx;
+    _cutCellPos = { x: x1, y: y1 };
+    _clipBuffer = null; // 상태 버퍼 초기화 (이동 모드)
+
+    // 시각적 표시: 해당 셀 점선 테두리
+    _markCutSlot(x1, y1, true);
+    toast(`✂ [${empRows[info.slotIdx].employee.name}] 이동 준비 — 목표 셀에 Ctrl+V`, 'info');
+
+  } else {
+    // ── 다중 셀: 기존 상태값 잘라내기 ─────────────────
+    _cutSlotIdx = null;
+    _cutCellPos = null;
+    const rows = _selStatusGrid();
+    if (!rows) return;
+    _clipBuffer = rows;
+    navigator.clipboard.writeText(rows.map(r => r.join('\t')).join('\n')).catch(() => {});
+
+    _pushHistory();
+    const styleUpdates = {};
+    for (let y = y1; y <= y2; y++) {
+      for (let x = x1; x <= x2; x++) {
+        const info = decodeCell(x, y);
+        if (!info || info.day.month() !== curMonth) continue;
+        const emp = empRows[info.empIdx];
+        if (!emp || leaveMap.get(emp.employee.id)?.has(info.date)) continue;
+        styleUpdates[C(x, y)] = cellStyle(emp, x, info.dayIdx, info.date, '');
+        statusMap.set(`${emp.employee.id}_${info.date}`, '');
+        unsaved.set(`${emp.employee.id}_${info.date}`, { empId: emp.employee.id, date: info.date, status: '근' });
+      }
+    }
+    if (Object.keys(styleUpdates).length) { jsi.setStyle(styleUpdates); updateSaveBtn(); }
+    toast('✂ 잘라내기 완료', 'info');
   }
-  if (Object.keys(styleUpdates).length) { jsi.setStyle(styleUpdates); updateSaveBtn(); }
-  toast('✂ 잘라내기 완료', 'info');
+}
+
+// 잘라낸 셀 표시 (점선 테두리)
+function _markCutSlot(x, y, on) {
+  const td = mountEl?.querySelector(`table tbody tr:nth-child(${y + 1}) td:nth-child(${x + 2})`);
+  if (!td) return;
+  td.style.outline = on ? '2px dashed #f59e0b' : '';
+  td.style.outlineOffset = on ? '-2px' : '';
+}
+
+// 직원 슬롯 교환 → empRows 순서 변경 → team_layouts 저장
+async function _doSlotSwap(targetSlotIdx, tx, ty) {
+  if (_cutSlotIdx === null) return;
+  const fromIdx = _cutSlotIdx;
+  const toIdx   = targetSlotIdx;
+
+  // 표시 해제
+  if (_cutCellPos) _markCutSlot(_cutCellPos.x, _cutCellPos.y, false);
+  _cutSlotIdx = null;
+  _cutCellPos = null;
+
+  if (fromIdx === toIdx) { toast('같은 위치입니다', 'info'); return; }
+
+  // empRows 교환
+  const temp = empRows[fromIdx];
+  empRows[fromIdx] = empRows[toIdx];
+  empRows[toIdx]   = temp;
+
+  // team_layouts에 새 순서 저장
+  const layoutData = empRows.map(r => ({ id: r.employee.id, isWonJang: r.isWonJang }));
+  const mk = dayjs(state.schedule.date).format('YYYY-MM-01');
+  const { error } = await upsertTeamLayout(mk, layoutData);
+  if (error) toast('순서 저장 실패: ' + error.message, 'error');
+  else {
+    state.schedule.layout = layoutData;
+    toast(`↕ [${empRows[toIdx]?.employee.name ?? ''}] ↔ [${empRows[fromIdx]?.employee.name ?? ''}] 위치 교환 완료`, 'success');
+  }
+
+  // 그리드 전체 재렌더
+  createSheet(mountEl);
 }
 
 function _doPasteFromBuffer() {
@@ -582,6 +679,10 @@ function _copyToClipboard() { _doCopy(); }
 // 컨텍스트 메뉴 & 상태 적용
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function ctxMenu(ws, x, y, e, items) {
+  const info = decodeCell(x, y);
+  const hasEmp = info && empRows[info.slotIdx];
+  const inMoveMode = _cutSlotIdx !== null;
+
   return [
     { title: '✅ 근무',                onclick: () => applyStatus('근') },
     { title: '🏖 연차',                onclick: () => applyStatus('연') },
@@ -590,8 +691,14 @@ function ctxMenu(ws, x, y, e, items) {
     { title: '⏸ 휴직',                onclick: () => applyStatus('직') },
     { title: '✖ 초기화',              onclick: () => applyStatus('') },
     { type: 'line' },
+    ...(hasEmp ? [
+      { title: `↕ 이 셀 잘라내기 (위치 이동용)`, onclick: _doCut },
+    ] : []),
+    ...(inMoveMode && hasEmp ? [
+      { title: `📌 여기로 이동 (${empRows[_cutSlotIdx]?.employee.name ?? ''})`, onclick: () => _doSlotSwap(info.slotIdx, x, y) },
+    ] : []),
+    { type: 'line' },
     { title: '📋 복사 (Ctrl+C)',       onclick: _copyToClipboard },
-    { title: '✂ 잘라내기 (Ctrl+X)',   onclick: () => document.execCommand('cut') },
     { title: '📋 붙여넣기 (Ctrl+V)',  onclick: _doPasteFromBuffer },
     { type: 'line' },
     { title: '↩ 되돌리기 (Ctrl+Z)',   onclick: undoAction },
